@@ -13,8 +13,8 @@ function box(w: number, h: number, d: number, color: number, x: number, y: numbe
 function buildGun(def: WeaponDef, tint: number): THREE.Group {
   const g = new THREE.Group();
   const t = new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.35);
-  const metal = new THREE.Color(0x2c2d31).multiply(t).getHex();
-  const metal2 = new THREE.Color(0x45474d).multiply(t).getHex();
+  const metal = new THREE.Color(0x5a5d66).multiply(t).getHex();
+  const metal2 = new THREE.Color(0x7a7e88).multiply(t).getHex();
   const wood = new THREE.Color(0x7a5230).multiply(t).getHex();
   switch (def.kind) {
     case 'knife':
@@ -89,7 +89,7 @@ export class ViewModel {
     this.flash = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.08), new THREE.MeshBasicMaterial({ color: 0xffd27a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
     this.flash.visible = false;
     this.gunHolder.add(this.flash);
-    this.root.position.set(0.2, -0.2, -0.38);
+    this.root.position.set(0.22, -0.24, -0.42);
   }
 
   setTeam(team: number) {
@@ -147,7 +147,7 @@ export class ViewModel {
     }
     const bx = Math.sin(this.bob) * 0.012 * Math.min(1, speed / 5);
     const by = Math.abs(Math.cos(this.bob)) * 0.012 * Math.min(1, speed / 5);
-    this.root.position.set(0.2 + bx, -0.2 - by - dip, -0.38 + this.kick * 0.05);
+    this.root.position.set(0.22 + bx, -0.24 - by - dip, -0.42 + this.kick * 0.05);
     this.root.rotation.set(this.kick * 0.12 + dip * 0.8, 0, dip * 0.5);
   }
 }

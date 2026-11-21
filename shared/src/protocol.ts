@@ -236,7 +236,7 @@ export interface RoomState {
 export type GameEvent =
   | { e: 'shot'; s: number; a: [number, number, number]; b: [number, number, number]; h: 0 | 1 | 2 } // h: 0 мимо, 1 карта, 2 тело
   | { e: 'wound'; v: number; p: number; x: number; y: number; z: number; r: number; x2: 0 | 1 }
-  | { e: 'kill'; k: number; v: number; w: number; hs: boolean; ex: boolean; d: [number, number, number]; p: number }
+  | { e: 'kill'; k: number; v: number; w: number; hs: boolean; ex: boolean; d: [number, number, number]; p: number; at: [number, number, number, number] }
   | { e: 'hurt'; v: number; from: [number, number, number]; dmg: number }
   | { e: 'plant'; p: [number, number, number]; site: number }
   | { e: 'defuse' }
@@ -264,7 +264,7 @@ export type ServerMsg =
   | RoomState
   | FullState
   | { t: 'ev'; e: GameEvent[] }
-  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number }
+  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number }
   | { t: 'err'; msg: string }
   | { t: 'kick'; msg: string }
   | { t: 'pong'; c: number };

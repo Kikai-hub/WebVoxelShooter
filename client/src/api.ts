@@ -23,6 +23,15 @@ export interface AccountInfo {
 
 const KEY = 'vts_token';
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 export function getToken(): string {
   try {
     return localStorage.getItem(KEY) ?? '';
@@ -51,7 +60,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   } catch {
     /* пусто */
   }
-  if (!res.ok) throw new Error(data.error ?? 'Ошибка сети (' + res.status + ')');
+  if (!res.ok) throw new ApiError(data.error ?? 'Ошибка сети (' + res.status + ')', res.status);
   return data as T;
 }
 

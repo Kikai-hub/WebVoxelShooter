@@ -1,0 +1,48 @@
+# Запуск: cp .env.example .env (вписать домен) && docker compose up -d
+services:
+  game:
+    build:
+      context: .
+      target: game
+    image: ${VTS_IMAGE:-ghcr.io/your-account/voxel-tactical}-game:latest
+    env_file: .env
+    environment:
+      GAME_PORT: "8080"
+      DATA_DIR: /app/data
+      TRUST_PROXY: "1"
+    volumes:
+      - game_data:/app/data
+    expose:
+      - "8080"
+    restart: unless-stopped
+    cpus: 1.5
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  proxy:
+    build:
+      context: .
+      target: proxy
+    image: ${VTS_IMAGE:-ghcr.io/your-account/voxel-tactical}-proxy:latest
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - game
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 256m
+
+volumes:
+  game_data:
+  caddy_data:
+  caddy_config:

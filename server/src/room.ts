@@ -234,7 +234,10 @@ export class Room {
   stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0 };
   tickTimeMs = 0;
 
-  constructor(readonly botLevel: string = 'medium') {
+  constructor(
+    readonly botLevel: string = 'medium',
+    readonly maxSpectators: number = MAX_SPECTATORS,
+  ) {
     this.loadMap('market');
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const p = new Player(i, i < TEAM_SIZE ? TEAM_T : TEAM_CT);
@@ -303,7 +306,7 @@ export class Room {
       this.assignHuman(slot, conn);
       return;
     }
-    if (this.spectators.size >= MAX_SPECTATORS) {
+    if (this.spectators.size >= this.maxSpectators) {
       conn.sendJson({ t: 'kick', msg: 'Комната заполнена: 10 игроков и 20 наблюдателей' });
       conn.close('full');
       this.conns.delete(conn);
@@ -623,10 +626,6 @@ export class Room {
         break;
       case 'roundEnd':
         if (now >= this.phaseEnd) {
-          if (this.draining) {
-            this.onDrained?.();
-            return;
-          }
           this.startRound();
         }
         break;
@@ -901,7 +900,7 @@ export class Room {
       victim.pistol = inst(DEFAULT_PISTOL);
       victim.armor = 0;
       victim.helmet = false;
-      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part });
+      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
       for (const q of this.players) q.bot?.onTeammateDeath(victim);
       if (victim.hasBomb) {
         victim.hasBomb = false;
@@ -1078,8 +1077,8 @@ export class Room {
       const p = c.slot >= 0 ? this.players[c.slot] : null;
       // мёртвые и наблюдатели видят всё, как в спектаторском режиме
       c.sendJson(p ? (p.alive ? byTeam[p.team] : byTeam[p.team]) : spec);
-      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0 });
-      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
+      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id });
+      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
     }
   }
 

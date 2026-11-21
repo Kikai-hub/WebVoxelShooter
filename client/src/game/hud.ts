@@ -72,7 +72,7 @@ export class Hud {
 
   constructor(
     parent: HTMLElement,
-    private info: MapInfo,
+    private mapInfo: MapInfo,
   ) {
     this.root = el('div', 'hud', parent);
     const top = el('div', 'hud-top', this.root);
@@ -135,7 +135,7 @@ export class Hud {
   }
 
   private renderMapImage(): HTMLCanvasElement {
-    const m = this.info.map;
+    const m = this.mapInfo.map;
     const c = document.createElement('canvas');
     c.width = m.sx;
     c.height = m.sz;
@@ -167,8 +167,8 @@ export class Hud {
     // буквы точек
     g.fillStyle = '#fff';
     g.font = 'bold 10px sans-serif';
-    this.info.sites.forEach((s, i) => {
-      g.fillText(this.info.siteNames[i], ((s.x0 + s.x1) / 2) * 2 - 3, (48 - (s.z0 + s.z1) / 2) * 2 + 4);
+    this.mapInfo.sites.forEach((s, i) => {
+      g.fillText(this.mapInfo.siteNames[i], ((s.x0 + s.x1) / 2) * 2 - 3, (48 - (s.z0 + s.z1) / 2) * 2 + 4);
     });
     return c;
   }
@@ -350,7 +350,7 @@ export class Hud {
     g.beginPath();
     g.arc(W / 2, W / 2, W / 2 - 2, 0, Math.PI * 2);
     g.stroke();
-    this.zone.textContent = zoneName(this.info, px, pz);
+    this.zone.textContent = zoneName(this.mapInfo, px, pz);
   }
 
   showBoard(show: boolean, st: RoomState | null, myId: number) {

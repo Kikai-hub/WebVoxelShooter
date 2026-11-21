@@ -8,7 +8,7 @@ import { decodeCmds, DT, type ClientMsg } from '../../shared/src/index';
 import { AccountStore, type Account } from './accounts';
 import { Room, type Conn } from './room';
 
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.GAME_PORT ?? 8080);
 const DATA_DIR = resolve(process.env.DATA_DIR ?? 'data');
 const STATIC_DIR = resolve(process.env.STATIC_DIR ?? 'dist/client');
 const BOT_LEVEL = process.env.BOT_LEVEL ?? 'medium';
@@ -17,7 +17,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) =
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const accounts = new AccountStore(DATA_DIR);
-const room = new Room(BOT_LEVEL);
+const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))));
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
 let nextTick = performance.now();
@@ -155,7 +155,9 @@ const server = createServer(async (req, res) => {
       if (!ADMIN_SECRET || body.secret !== ADMIN_SECRET) return json(res, 403, { error: 'forbidden' });
       if (body.cmd === 'ban') accounts.ban(String(body.login ?? ''), String(body.reason ?? ''), body.ip ? String(body.ip) : undefined);
       if (body.cmd === 'drain') {
+        // после конца текущего матча процесс завершится, Docker перезапустит контейнер
         room.draining = true;
+        console.log('drain: комната закроется после окончания матча');
         room.onDrained = () => {
           accounts.flush();
           process.exit(0);

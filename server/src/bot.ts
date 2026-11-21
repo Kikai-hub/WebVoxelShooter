@@ -316,8 +316,10 @@ export class Bot {
         dy = aimY - ey;
       const dist = Math.hypot(dx, dz);
       if (this.thinkTick % 10 === 0) {
-        this.swayTY = this.rng.range(-1, 1) * this.lv.sway;
-        this.swayTP = this.rng.range(-1, 1) * this.lv.sway * 0.8;
+        // кто стоит на позиции, целится спокойнее
+        const steady = this.holding ? 0.6 : 1;
+        this.swayTY = this.rng.range(-1, 1) * this.lv.sway * steady;
+        this.swayTP = this.rng.range(-1, 1) * this.lv.sway * 0.8 * steady;
       }
       this.swayY += (this.swayTY - this.swayY) * 0.15;
       this.swayP += (this.swayTP - this.swayP) * 0.15;

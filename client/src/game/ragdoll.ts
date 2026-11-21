@@ -75,7 +75,7 @@ export class Ragdoll {
     const near: Record<number, number[]> = { [PART_HEAD]: [0, 1], [PART_TORSO]: [1, 2, 3, 4], [PART_ARM_L]: [3, 5], [PART_ARM_R]: [4, 6], [PART_LEG_L]: [7, 9], [PART_LEG_R]: [8, 10] };
     const strong = new Set(near[hitPart] ?? [1, 2]);
     for (let i = 0; i < NP; i++) {
-      const k = strong.has(i) ? 3.2 : 1.2;
+      const k = strong.has(i) ? 1.3 : 0.45;
       this.px[i * 3] = this.x[i * 3] - impulse[0] * k * dt;
       this.px[i * 3 + 1] = this.x[i * 3 + 1] - Math.max(0, impulse[1]) * k * dt;
       this.px[i * 3 + 2] = this.x[i * 3 + 2] - impulse[2] * k * dt;
@@ -106,8 +106,19 @@ export class Ragdoll {
     for (const [a, b] of [[5, 1], [6, 1], [9, 2], [10, 2], [9, 10], [5, 6], [0, 2]]) add(a, b, true);
   }
 
+  private acc = 0;
+
+  /** Фиксированный шаг 1/60 с: верле-интегратор нестабилен при переменном шаге. */
   update(dt: number) {
     if (this.sleeping) return;
+    this.acc = Math.min(this.acc + dt, 0.1);
+    while (this.acc >= 1 / 60 && !this.sleeping) {
+      this.acc -= 1 / 60;
+      this.step(1 / 60);
+    }
+  }
+
+  private step(dt: number) {
     this.age += dt;
     if (this.age > this.holdTime && this.sticks.some((s) => s.temp)) this.sticks = this.sticks.filter((s) => !s.temp);
     const g = -18 * dt * dt;
@@ -161,6 +172,8 @@ export class Ragdoll {
         const top = (Math.floor((y - r) / VOXEL) + 1) * VOXEL + r;
         if (top - y < 0.3) {
           this.x[o + 1] = top;
+          // без отскока: выталкивание из пола не должно превращаться в скорость вверх
+          if (this.px[o + 1] < top) this.px[o + 1] = top;
           // трение о землю
           this.px[o] = this.px[o] + (x - this.px[o]) * 0.35;
           this.px[o + 2] = this.px[o + 2] + (z - this.px[o + 2]) * 0.35;

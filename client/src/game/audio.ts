@@ -38,6 +38,7 @@ export class Sfx {
   constructor() {
     // скачиваем заранее, пока игрок в меню; раскодируем, когда появится AudioContext
     // файлы общие у стволов одного калибра — грузим каждый набор один раз
+    this.loadVoices();
     const files = new Set(Object.entries(SHOT_SOUNDS).map(([k, s]) => s.file ?? k));
     for (const key of files)
       for (let i = 0; i < (SHOT_SOUNDS[key]?.n ?? 3); i++) {
@@ -52,6 +53,53 @@ export class Sfx {
             /* нет файла — останется синтезированный звук */
           });
       }
+  }
+
+  // ---- Комментатор: First Blood, серии убийств, Headshot ----
+
+  /** громкость реплик комментатора (доля от общей) */
+  static readonly ANNOUNCER_GAIN = 0.2;
+  private voiceRaw = new Map<string, ArrayBuffer>();
+  private voice = new Map<string, AudioBuffer>();
+  /** когда освободится «голос»: реплики идут по очереди, не накладываясь */
+  private voiceUntil = 0;
+
+  private loadVoices() {
+    for (const name of ['firstblood', 'doublekill', 'triplekill', 'megakill', 'rampage', 'headshot'])
+      fetch(`${import.meta.env.BASE_URL}sounds/announcer/${name}.mp3`)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
+        .then((ab) => {
+          this.voiceRaw.set(name, ab);
+          if (this.ctx) this.decodeVoice(name);
+        })
+        .catch(() => {});
+  }
+
+  private decodeVoice(name: string) {
+    const ab = this.voiceRaw.get(name);
+    if (!ab || !this.ctx) return;
+    this.voiceRaw.delete(name);
+    this.ctx
+      .decodeAudioData(ab)
+      .then((buf) => this.voice.set(name, buf))
+      .catch(() => {});
+  }
+
+  /** Реплика комментатора (громкость 20%); если голос занят — сразу после предыдущей. */
+  announce(name: string) {
+    const ctx = this.ensure();
+    const buf = this.voice.get(name);
+    if (!ctx || !buf) return;
+    const start = Math.max(ctx.currentTime, this.voiceUntil);
+    // очередь не копим: старые реплики уже неактуальны
+    if (start - ctx.currentTime > 2.5) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = Sfx.ANNOUNCER_GAIN;
+    src.connect(g).connect(this.master!);
+    src.start(start);
+    this.voiceUntil = start + buf.duration + 0.05;
   }
 
   private decode(name: string) {
@@ -80,6 +128,7 @@ export class Sfx {
         const d = this.noise.getChannelData(0);
         for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
         for (const name of [...this.raw.keys()]) this.decode(name);
+        for (const name of [...this.voiceRaw.keys()]) this.decodeVoice(name);
       } catch {
         return null;
       }

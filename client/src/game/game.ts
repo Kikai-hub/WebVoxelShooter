@@ -110,6 +110,8 @@ interface CPlayer {
   renderYaw: number;
   renderPitch: number;
   renderCrouch: boolean;
+  /** сглаженная скорость на экране — для покачивания оружия у наблюдателя */
+  renderSpeed: number;
   /** анимация тела (шаг, присед, прыжок, отдача, перезарядка) — только картинка */
   anim: AgentAnimator;
 }
@@ -265,6 +267,7 @@ export class Game {
     this.hud.preferred = { primary: account.loadout.primary[0], pistol: account.loadout.pistol[0] };
     this.hud.onChat = (t) => this.sendJson({ t: 'chat', text: t });
     this.hud.onBuy = (k) => this.sendJson({ t: 'buy', item: k });
+    this.hud.onSell = (k) => this.sendJson({ t: 'sell', item: k });
     this.hud.onChatClose = () => this.lock();
     this.applySettings(this.settings);
 
@@ -289,6 +292,8 @@ export class Game {
   private dropsView = new DropsView();
   private nades: number[] = [0, 0, 0, 0];
   private hasKit = false;
+  /** купленное в этом раунде, что можно продать (с сервера) */
+  private sellList: string[] = [];
   private mapRenderer: MapRenderer;
   private skyGroup: THREE.Group;
 
@@ -374,7 +379,7 @@ export class Game {
     const el = this.pauseEl?.querySelector(".pause-hint");
     if (!el) return;
     const k = (a: Action) => this.binds[a].map(keyLabel).join("/") || "—";
-    el.textContent = `${k("forward")}${k("left")}${k("back")}${k("right")} — ход · ${k("jump")} — прыжок · ${k("crouch")} — присесть · ${k("use")} — заложить/обезвредить/подобрать · ${k("reload")} — перезарядка · ${k("primary")}/${k("pistol")}/${k("knife")}, ${k("lastWeapon")} — оружие · ${k("grenade")} — гранаты · ${k("drop")} — выбросить · ${k("buy")} — покупка · ${k("team")} — команда · ${k("scoreboard")} — счёт · ${k("chat")} — чат · ПКМ — прицел снайперки. Клавиши меняются в главном меню: Настройки → Управление.`;
+    el.textContent = `${k("forward")} ${k("left")} ${k("back")} ${k("right")} — ход · ${k("jump")} — прыжок · ${k("crouch")} — присесть · ${k("use")} — заложить/обезвредить/подобрать · ${k("reload")} — перезарядка · ${k("primary")}/${k("pistol")}/${k("knife")}, ${k("lastWeapon")} — оружие · ${k("grenade")} — гранаты · ${k("drop")} — выбросить · ${k("buy")} — покупка · ${k("team")} — команда · ${k("scoreboard")} — счёт · ${k("chat")} — чат · ПКМ — прицел снайперки. Клавиши меняются в главном меню: Настройки → Управление.`;
   }
 
   private buildPause() {
@@ -490,6 +495,7 @@ export class Game {
         this.pisId = m.pis;
         this.nades = m.nades;
         this.hasKit = m.kit;
+        this.sellList = m.sell ?? [];
         if (this.slot >= 3 && this.nades[this.slot - 3] <= 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         if (this.slot === SLOT_PRIMARY && this.priId < 0) this.slot = SLOT_PISTOL;
         break;
@@ -628,7 +634,7 @@ export class Game {
   private getPlayer(id: number): CPlayer {
     let p = this.players.get(id);
     if (!p) {
-      p = { id, body: null, snaps: [], lastTick: 0, dead: false, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [0, 0, 0], renderYaw: 0, renderPitch: 0, renderCrouch: false, anim: new AgentAnimator() };
+      p = { id, body: null, snaps: [], lastTick: 0, dead: false, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [0, 0, 0], renderYaw: 0, renderPitch: 0, renderCrouch: false, renderSpeed: 0, anim: new AgentAnimator() };
       this.players.set(id, p);
     }
     return p;
@@ -663,6 +669,8 @@ export class Game {
       case 'shot': {
         const isBot = this.pub(e.s)?.b ?? false;
         if (e.s === this.myId && this.predAlive) break; // свои выстрелы уже нарисованы
+        // наблюдаем за стрелявшим от первого лица — его оружие дёргается, вспышка у дула
+        if (!this.predAlive && e.s === this.specTarget) this.vm.fire();
         const shooter = this.players.get(e.s);
         shooter?.anim.fire(WEAPONS[this.pub(e.s)?.w ?? 1]?.kind ?? 'rifle');
         // начало трассера — примерно у дула оружия
@@ -719,6 +727,8 @@ export class Game {
         const k = this.pub(e.k),
           v = this.pub(e.v);
         this.hud.killFeed(k ? k.n : 'мир', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, WEAPONS[e.w]?.name ?? '', e.hs, e.ex, e.k === this.myId || e.v === this.myId);
+        // «Headshot» — только тому, кто убил в голову
+        if (e.k === this.myId && e.hs) this.sfx.announce('headshot');
         if (e.k === this.myId) {
           this.sfx.hit(e.hs);
           this.hud.hitMarker(now);
@@ -849,6 +859,13 @@ export class Game {
         this.sfx.fire(Math.hypot(x - eye.x, y - eye.y, z - eye.z), e.dur);
         break;
       }
+      case 'announce': {
+        const who = this.pub(e.s);
+        const label = { firstblood: 'First Blood', doublekill: 'Double Kill', triplekill: 'Triple Kill', megakill: 'Mega Kill', rampage: 'Rampage' }[e.kind];
+        this.sfx.announce(e.kind);
+        if (who) this.hud.info(`${who.n}: ${label}!`);
+        break;
+      }
       case 'fireOut': {
         // дым потушил огонь: шипение и пар
         this.fireView.remove(e.id);
@@ -880,8 +897,8 @@ export class Game {
         if (e.s === this.myId) this.sfx.click(700, 0.05, 0.2);
         break;
       case 'reload':
-        if (e.s === this.myId) {
-          const w = WEAPONS[this.own?.weapon ?? 1];
+        if (e.s === this.myId || (!this.predAlive && e.s === this.specTarget)) {
+          const w = WEAPONS[e.s === this.myId ? (this.own?.weapon ?? 1) : (this.players.get(e.s)?.snaps.at(-1)?.weapon ?? 1)];
           this.vm.reload(w?.reload ?? 2);
           this.sfx.click(400, 0.06, 0.15);
         }
@@ -1277,7 +1294,7 @@ export class Game {
 
   private toggleBuy() {
     this.buyOpen = !this.buyOpen;
-    this.hud.showBuy(this.buyOpen, this.money, this.canBuyLocal(), this.myTeam);
+    this.hud.showBuy(this.buyOpen, this.money, this.canBuyLocal(), this.myTeam, this.sellList);
     if (this.buyOpen) {
       this.softLock = false;
       if (this.realLocked()) document.exitPointerLock();
@@ -1515,23 +1532,42 @@ export class Game {
       h = this.wrap.clientHeight;
     const own = this.own;
     const speed = Math.hypot(this.pred.vx, this.pred.vz);
-    if (own) {
-      this.vm.setWeapon(own.weapon);
-      this.lastWeapon = own.weapon;
+    // наблюдение от первого лица: руки, оружие и рукава того, за кем смотрим
+    const spec = this.spectatedFirstPerson();
+    if (spec) {
+      const snap = spec.p.snaps[spec.p.snaps.length - 1];
+      this.vm.setTeam(spec.team);
+      this.vm.setWeapon(snap.weapon);
+    } else {
+      if (this.myTeam >= 0) this.vm.setTeam(this.myTeam);
+      if (own) {
+        this.vm.setWeapon(own.weapon);
+        this.lastWeapon = own.weapon;
+      }
     }
     const scoped = this.isScoped();
     this.camera.fov = scoped ? 20 : this.settings.fov * 0.75;
     this.camera.updateProjectionMatrix();
-    this.vm.update(dt, this.pred.onGround ? speed : 0, w / h, this.predAlive, scoped);
+    if (spec) this.vm.update(dt, spec.p.renderSpeed, w / h, true, false);
+    else this.vm.update(dt, this.pred.onGround ? speed : 0, w / h, this.predAlive, scoped);
     this.wrap.classList.toggle('scoped', scoped);
 
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
-    if (this.predAlive) {
+    if (this.predAlive || spec) {
       this.renderer.clearDepth();
       this.renderer.render(this.vm.scene, this.vm.camera);
     }
   };
+
+  /** За кем сейчас смотрим от первого лица (мёртвый или наблюдатель), если видим его. */
+  private spectatedFirstPerson(): { p: CPlayer; team: number } | null {
+    if (this.predAlive || this.specTarget < 0) return null;
+    const p = this.players.get(this.specTarget);
+    const info = this.pub(this.specTarget);
+    if (!p || !info || p.dead || !info.a || !p.snaps.length || p.lastTick < this.latestTick - 64) return null;
+    return { p, team: info.t };
+  }
 
   private adaptResolution(dt: number) {
     this.resTimer += dt;
@@ -1622,6 +1658,7 @@ export class Game {
       body.setWeapon(kind, WEAPONS[b.weapon]?.key);
       // шаги
       const sp = Math.hypot(x - p.lastPos[0], z - p.lastPos[2]) / Math.max(dt, 1e-3);
+      p.renderSpeed = p.renderSpeed * 0.8 + Math.min(sp, 12) * 0.2;
       p.lastPos = [x, y, z];
       if (sp > 3.5 && sp < 12 && b.flags & SF_ONGROUND) {
         p.stepAcc += sp * dt;
@@ -1750,10 +1787,10 @@ export class Game {
     this.hud.setNet(`${Math.round(1000 / this.fpsAvg)} FPS · пинг ${Math.round(this.ping)} мс${this.resScale < 1 ? ' · масштаб ' + Math.round(this.resScale * 100) + '%' : ''}${this.connected ? '' : ' · нет связи'}`);
     this.hud.showBoard(this.boardOpen, this.st, this.myId);
     if (this.buyOpen) {
-      const key = `${this.money}|${this.canBuyLocal()}`;
+      const key = `${this.money}|${this.canBuyLocal()}|${this.sellList.join(",")}`;
       if ((this as any)._buyKey !== key) {
         (this as any)._buyKey = key;
-        this.hud.showBuy(true, this.money, this.canBuyLocal(), this.myTeam);
+        this.hud.showBuy(true, this.money, this.canBuyLocal(), this.myTeam, this.sellList);
       }
     }
     // миникарта
@@ -1811,7 +1848,7 @@ export class Game {
     if (opts.explode) body.explodeHead(this.debris, dir, this.settings.blood);
     if (opts.kill) {
       body.ragdoll = new Ragdoll(this.info.map, body.pose, [dir[0] * 3.5, 0.8, dir[2] * 3.5], opts.explode ? 0 : 1, !!opts.explode);
-      const fake: CPlayer = { id: 100 + Math.floor(Math.random() * 1000), body, snaps: [], lastTick: 0, dead: true, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [x, this.pred.y, z], renderYaw: 0, renderPitch: 0, renderCrouch: false, anim: new AgentAnimator() };
+      const fake: CPlayer = { id: 100 + Math.floor(Math.random() * 1000), body, snaps: [], lastTick: 0, dead: true, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [x, this.pred.y, z], renderYaw: 0, renderPitch: 0, renderCrouch: false, renderSpeed: 0, anim: new AgentAnimator() };
       this.players.set(fake.id, fake);
       if (this.st && !this.st.pl[fake.id]) (this.st.pl as any)[fake.id] = { i: fake.id, n: 'манекен', t: team, b: true, a: false, k: 0, d: 0, hp: 0, m: -1, w: 5, ag: 0, sk: 0, c: true, bomb: false };
     }

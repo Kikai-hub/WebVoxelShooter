@@ -1217,3 +1217,31 @@ input {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* продажа купленного в этом раунде (как в CS2) */
+.buy-item {
+  position: relative;
+}
+.buy-item.owned {
+  border-color: rgba(110, 200, 120, 0.7);
+  background: rgba(110, 200, 120, 0.1);
+  opacity: 1;
+}
+.buy-sell {
+  position: absolute;
+  right: 4px;
+  bottom: -9px;
+  width: 22px;
+  height: 18px;
+  line-height: 17px;
+  text-align: center;
+  font-size: 13px;
+  color: #10130f;
+  background: #9ad38a;
+  border-radius: 9px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.buy-sell:hover {
+  background: #c4f0b6;
+}

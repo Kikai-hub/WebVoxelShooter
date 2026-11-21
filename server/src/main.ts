@@ -145,6 +145,7 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
+  '.mp3': 'audio/mpeg',
   '.obj': 'text/plain; charset=utf-8',
   '.mtl': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
@@ -347,6 +348,9 @@ function onSocket(ws: WebSocket, ip: string) {
         break;
       case 'vote':
         if (typeof msg.map === 'string') room.vote(conn, msg.map);
+        break;
+      case 'sell':
+        if (conn.slot >= 0 && typeof msg.item === 'string') room.sell(room.players[conn.slot], msg.item);
         break;
       case 'team':
         if (msg.team === 0 || msg.team === 1) room.switchTeam(conn, msg.team);

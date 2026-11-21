@@ -154,6 +154,16 @@ export interface Conn {
   close(reason: string): void;
 }
 
+/** Покупка в этом раунде — для продажи (возврат денег, возврат заменённого оружия и брони). */
+export interface Purchase {
+  key: string;
+  price: number;
+  inst?: WeaponInst;
+  prev?: WeaponInst | null;
+  armor?: number;
+  helmet?: boolean;
+}
+
 export interface WeaponInst {
   def: WeaponDef;
   mag: number;
@@ -226,6 +236,8 @@ export class Player {
   roundDamage = 0;
   /** заложил бомбу или обезвредил её в этом раунде */
   objective = false;
+  /** покупки этого раунда (продать можно только их) */
+  purchases: Purchase[] = [];
 
   get weapon(): WeaponDef {
     if (this.slot === SLOT_PRIMARY && this.primary) return this.primary.def;
@@ -289,6 +301,8 @@ export class Room {
   phase: Phase = 'freeze';
   phaseEnd = 0;
   liveStart = 0;
+  /** в этом раунде уже было первое убийство (комментатор «First Blood») */
+  firstBlood = false;
   roundNum = 0;
   scores: [number, number] = [0, 0];
   lossStreak: [number, number] = [0, 0];
@@ -465,6 +479,7 @@ export class Room {
     p.hasKit = false;
     // гранаты бота человеку не достаются (он их не покупал)
     p.nades = [0, 0, 0, 0];
+    p.purchases = [];
     p.kills = 0;
     p.deaths = 0;
     p.cmdQueue.length = 0;
@@ -609,16 +624,19 @@ export class Room {
       if (!forTeam(def, p.team) || p.nades[nt] >= NADE_LIMIT[NADE_TYPES[nt]] || p.money < def.price) return false;
       p.money -= def.price;
       p.nades[nt]++;
+      p.purchases.push({ key: item, price: def.price });
       return true;
     }
     if (item === 'kit') {
       if (p.team !== TEAM_CT || p.hasKit || p.money < KIT_PRICE) return false;
       p.money -= KIT_PRICE;
       p.hasKit = true;
+      p.purchases.push({ key: item, price: KIT_PRICE });
       return true;
     }
     if (item === 'armor') {
       if (p.armor >= 100 || p.money < ARMOR_PRICE) return false;
+      p.purchases.push({ key: item, price: ARMOR_PRICE, armor: p.armor, helmet: p.helmet });
       p.money -= ARMOR_PRICE;
       p.armor = 100;
       return true;
@@ -627,6 +645,7 @@ export class Room {
       if (p.armor >= 100 && p.helmet) return false;
       const price = p.armor >= 100 ? HELMET_PRICE - ARMOR_PRICE : HELMET_PRICE;
       if (p.money < price) return false;
+      p.purchases.push({ key: item, price, armor: p.armor, helmet: p.helmet });
       p.money -= price;
       p.armor = 100;
       p.helmet = true;
@@ -634,18 +653,68 @@ export class Room {
     }
     const def = WEAPON_BY_KEY[item];
     if (!def || def.slot === SLOT_KNIFE || def.kind === 'grenade' || !forTeam(def, p.team) || p.money < def.price) return false;
+    const bought = inst(def);
     if (def.slot === SLOT_PRIMARY) {
       if (p.primary && p.primary.def === def) return false;
-      p.primary = inst(def);
+      p.purchases.push({ key: item, price: def.price, inst: bought, prev: p.primary });
+      p.primary = bought;
       p.slot = SLOT_PRIMARY;
     } else {
       if (p.pistol.def === def) return false;
-      p.pistol = inst(def);
+      p.purchases.push({ key: item, price: def.price, inst: bought, prev: p.pistol });
+      p.pistol = bought;
       p.slot = SLOT_PISTOL;
     }
     p.money -= def.price;
     p.reloadEnd = 0;
     return true;
+  }
+
+  /** Покупка ещё в силе (предмет у игрока), её можно вернуть. */
+  private refundable(p: Player, b: Purchase): boolean {
+    const nt = NADE_BUY[b.key];
+    if (nt !== undefined) return p.nades[nt] > 0;
+    if (b.key === 'kit') return p.hasKit;
+    // броня — только целая (после попаданий не продаётся)
+    if (b.key === 'armor' || b.key === 'helmet') return p.armor >= 100 && (b.key === 'armor' || p.helmet);
+    return b.inst !== undefined && (p.primary === b.inst || p.pistol === b.inst);
+  }
+
+  /** Ключи того, что можно продать сейчас (для кнопок продажи в меню покупки). */
+  sellable(p: Player): string[] {
+    if (!this.canBuy(p)) return [];
+    return [...new Set(p.purchases.filter((b) => this.refundable(p, b)).map((b) => b.key))];
+  }
+
+  /**
+   * Продажа, как в CS2: только купленное в этом раунде, пока игрок в зоне покупки и не вышло время.
+   * Деньги — полностью; заменённое оружие возвращается в руки.
+   */
+  sell(p: Player, item: string): boolean {
+    if (!this.canBuy(p)) return false;
+    for (let i = p.purchases.length - 1; i >= 0; i--) {
+      const b = p.purchases[i];
+      if (b.key !== item || !this.refundable(p, b)) continue;
+      const nt = NADE_BUY[b.key];
+      if (nt !== undefined) {
+        p.nades[nt]--;
+        if (p.slot === SLOT_HE + nt && p.nades[nt] <= 0) p.slot = p.gunSlot;
+      } else if (b.key === 'kit') p.hasKit = false;
+      else if (b.key === 'armor' || b.key === 'helmet') {
+        p.armor = b.armor ?? 0;
+        p.helmet = b.helmet ?? false;
+      } else if (p.primary === b.inst) {
+        p.primary = b.prev ?? null;
+        if (!p.primary && p.slot === SLOT_PRIMARY) p.slot = SLOT_PISTOL;
+      } else if (p.pistol === b.inst) {
+        p.pistol = b.prev ?? inst(DEFAULT_PISTOL);
+      }
+      p.money = Math.min(MAX_MONEY, p.money + b.price);
+      p.reloadEnd = 0;
+      p.purchases.splice(i, 1);
+      return true;
+    }
+    return false;
   }
 
   // ---------- Голосование за карту ----------
@@ -748,6 +817,7 @@ export class Room {
     this.nadesInFlight = [];
     this.smokes = [];
     this.fires = [];
+    this.firstBlood = false;
     this.drops = [];
     // стены восстанавливаются в начале раунда
     this.chips = [];
@@ -767,6 +837,7 @@ export class Room {
       p.roundKills = 0;
       p.roundDamage = 0;
       p.objective = false;
+      p.purchases = [];
       p.exploded = false;
       p.hasBomb = false;
       p.useProgress = 0;
@@ -1206,6 +1277,11 @@ export class Room {
         attacker.kills++;
         if (attacker.team !== victim.team) {
           attacker.roundKills++;
+          // комментатор: первое убийство раунда, затем серии одного игрока за раунд (слышат все)
+          const n = attacker.roundKills;
+          const call = n >= 2 ? (n === 2 ? 'doublekill' : n === 3 ? 'triplekill' : n === 4 ? 'megakill' : 'rampage') : !this.firstBlood ? 'firstblood' : null;
+          this.firstBlood = true;
+          if (call) this.events.push({ e: 'announce', kind: call, s: attacker.id });
           this.stat(attacker, { kills: 1, headshots: hs ? 1 : 0, weapon: def.key });
         }
         attacker.money = Math.min(MAX_MONEY, attacker.money + def.killReward);
@@ -1221,6 +1297,7 @@ export class Room {
       victim.armor = 0;
       victim.helmet = false;
       victim.hasKit = false;
+      victim.purchases = [];
       this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
       for (const q of this.players) q.bot?.onTeammateDeath(victim);
       if (victim.hasBomb) {
@@ -1704,7 +1781,7 @@ export class Room {
       const p = c.slot >= 0 ? this.players[c.slot] : null;
       // мёртвые и наблюдатели видят всё, как в спектаторском режиме
       c.sendJson(p ? (p.alive ? byTeam[p.team] : byTeam[p.team]) : spec);
-      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades], kit: p.hasKit });
+      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades], kit: p.hasKit, sell: this.sellable(p) });
       else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0, 0], kit: false, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
     }
   }

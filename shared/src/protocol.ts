@@ -254,6 +254,8 @@ export type GameEvent =
   | { e: 'boom'; id: number; type: number; p: [number, number, number] }
   | { e: 'fire'; id: number; p: [number, number, number]; r: number; dur: number }
   | { e: 'fireOut'; id: number }
+  /** комментатор: первая кровь и серии убийств за раунд (s — кто) */
+  | { e: 'announce'; kind: 'firstblood' | 'doublekill' | 'triplekill' | 'megakill' | 'rampage'; s: number }
   | { e: 'flash'; v: number; dur: number }
   | { e: 'pickup'; s: number; w: number }
   | { e: 'chip'; c: number[] }
@@ -283,7 +285,7 @@ export type ServerMsg =
   | RoomState
   | FullState
   | { t: 'ev'; e: GameEvent[] }
-  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: number[]; kit: boolean }
+  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: number[]; kit: boolean; /** что можно продать сейчас (купленное в этом раунде) */ sell?: string[] }
   | { t: 'err'; msg: string }
   | { t: 'kick'; msg: string }
   | { t: 'pong'; c: number };
@@ -294,4 +296,5 @@ export type ClientMsg =
   | { t: 'chat'; text: string }
   | { t: 'ping'; c: number }
   | { t: 'vote'; map: string }
-  | { t: 'team'; team: number };
+  | { t: 'team'; team: number }
+  | { t: 'sell'; item: string };

@@ -74,6 +74,7 @@ export class Hud {
   chatOpen = false;
   onChat: ((text: string) => void) | null = null;
   onBuy: ((item: string) => void) | null = null;
+  onSell: ((item: string) => void) | null = null;
   onChatClose: (() => void) | null = null;
   preferred: { primary: string; pistol: string } = { primary: 'vikhr', pistol: 'osa' };
 
@@ -430,7 +431,8 @@ export class Hud {
     }
   }
 
-  showBuy(show: boolean, money: number, canBuy: boolean, team = -1) {
+  /** sellable — купленное в этом раунде: на кнопке такого предмета мини-кнопка продажи (↺) */
+  showBuy(show: boolean, money: number, canBuy: boolean, team = -1, sellable: string[] = []) {
     this.buyMenu.style.display = show ? 'grid' : 'none';
     if (!show) return;
     this.buyMenu.innerHTML = '';
@@ -465,10 +467,19 @@ export class Hud {
         el('span', 'buy-price', b, '$' + it.price);
         b.dataset.hot = String(hot++);
         b.onclick = () => this.onBuy?.(it.key);
+        if (sellable.includes(it.key)) {
+          b.classList.add('owned');
+          const s = el('span', 'buy-sell', b, '↺');
+          s.title = 'Продать (вернуть деньги)';
+          s.onclick = (ev) => {
+            ev.stopPropagation();
+            this.onSell?.(it.key);
+          };
+        }
         b.dataset.key = it.key;
       }
     }
-    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка · гранаты: не больше 1 осколочной, 2 светошумовых, 1 дымовой и 1 зажигательной');
+    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка · ↺ — продать купленное в этом раунде · гранаты: не больше 1 осколочной, 2 светошумовых, 1 дымовой и 1 зажигательной');
   }
 
   buyHotkey(n: number): string | null {

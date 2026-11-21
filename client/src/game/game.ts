@@ -32,6 +32,11 @@ import {
   SF_USING,
   SLOT_KNIFE,
   SLOT_PISTOL,
+  OT_MONEY,
+  REGULATION_ROUNDS,
+  overtimeOf,
+  swapsSidesBefore,
+  winTarget,
   SLOT_PRIMARY,
   TICK_RATE,
   WEAPONS,
@@ -730,7 +735,11 @@ export class Game {
         this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         this.buyOpen = false;
         this.hud.showBuy(false, 0, false);
-        this.hud.showCenter(`Раунд ${e.rn}`, 'Заморозка: покупка на B', 3, now);
+        {
+          const ot = overtimeOf(e.rn);
+          const title = ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · раунд ${e.rn}` : e.rn === REGULATION_ROUNDS ? `Раунд ${e.rn} — последний` : `Раунд ${e.rn}`;
+          this.hud.showCenter(title, ot && swapsSidesBefore(e.rn) ? `До ${winTarget(e.rn)} побед · у всех $${OT_MONEY}` : 'Заморозка: покупка на B', 3, now, ot ? 'warn' : '');
+        }
         this.specTarget = -1;
         break;
       case 'roundEnd':

@@ -28,8 +28,35 @@ export const DEFUSE_RANGE = 1.6;
 export const ROUND_END_TIME = 6;
 export const MATCH_END_TIME = 20;
 export const VOTE_TIME = 20;
-export const WIN_ROUNDS = 7;
-export const HALF_ROUNDS = 6;
+/** Основное время: 24 раунда, смена сторон после 12-го, побеждает первый, кто взял 13. */
+export const WIN_ROUNDS = 13;
+export const HALF_ROUNDS = 12;
+export const REGULATION_ROUNDS = HALF_ROUNDS * 2;
+/**
+ * Овертайм при 12:12: блоки по 4 раунда (смена сторон после каждых двух), нужно взять 3 из 4.
+ * При 2:2 в блоке — следующий блок. Деньги в начале каждой половины овертайма — OT_MONEY.
+ */
+export const OT_ROUNDS = 4;
+export const OT_MONEY = 10000;
+
+/** Сколько побед нужно для победы в матче, если сейчас идёт раунд round (с 1). */
+export function winTarget(round: number): number {
+  if (round <= REGULATION_ROUNDS) return WIN_ROUNDS;
+  // каждый овертайм начинается с ничьей: 12:12, 14:14, 16:16… — нужно взять 3 из 4
+  const block = Math.floor((round - REGULATION_ROUNDS - 1) / OT_ROUNDS);
+  return HALF_ROUNDS + (OT_ROUNDS / 2) * block + OT_ROUNDS / 2 + 1;
+}
+
+/** Меняются ли стороны перед раундом round: после 12-го и в начале каждой половины овертайма. */
+export function swapsSidesBefore(round: number): boolean {
+  if (round === HALF_ROUNDS + 1) return true;
+  return round > REGULATION_ROUNDS && (round - REGULATION_ROUNDS - 1) % (OT_ROUNDS / 2) === 0;
+}
+
+/** Номер овертайма (1, 2…) для раунда round или 0 в основное время. */
+export function overtimeOf(round: number): number {
+  return round <= REGULATION_ROUNDS ? 0 : Math.floor((round - REGULATION_ROUNDS - 1) / OT_ROUNDS) + 1;
+}
 export const RECONNECT_HOLD = 60;
 
 // Экономика

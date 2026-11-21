@@ -13,7 +13,7 @@ const t0 = Date.now();
 let maxTick = 0;
 let ticks = 0;
 const tickTimes: number[] = [];
-const limit = matches * 13 * 64 * 200; // страховка от бесконечного цикла
+const limit = matches * 40 * 64 * 200; // страховка от бесконечного цикла
 
 while (room.stats.matches < matches && ticks < limit) {
   room.step();

@@ -12,6 +12,8 @@ import {
   WEAPONS,
   zoneName,
   MAP_LIST,
+  overtimeOf,
+  winTarget,
   type MapInfo,
   type PublicPlayer,
   type RoomState,
@@ -408,7 +410,8 @@ export class Hud {
     this.board.style.display = show ? 'block' : 'none';
     if (!show || !st) return;
     this.board.innerHTML = '';
-    el('div', 'board-title', this.board, `Раунд ${st.rn} · ${st.map === 'market' ? 'Рыночная площадь' : st.map} · наблюдателей: ${st.spec}`);
+    const ot = overtimeOf(st.rn);
+    el('div', 'board-title', this.board, `${ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · ` : ''}Раунд ${st.rn} · до ${winTarget(st.rn)} побед · ${MAP_LIST.find((m) => m.id === st.map)?.name ?? st.map} · наблюдателей: ${st.spec}`);
     for (const team of [0, 1]) {
       const sec = el('div', 'board-team team' + team, this.board);
       el('div', 'board-head', sec, `${TEAM_LABEL[team]} — ${st.sc[team]}`);

@@ -38,7 +38,10 @@ import {
   DEFAULT_PISTOL,
   DT,
   FREEZE_TIME,
-  HALF_ROUNDS,
+  OT_MONEY,
+  overtimeOf,
+  swapsSidesBefore,
+  winTarget,
   HEAD_EXPLODE_CHANCE,
   HELMET_PRICE,
   HISTORY_TICKS,
@@ -81,7 +84,6 @@ import {
   WEAPONS,
   WEAPON_BY_KEY,
   WIN_REWARD,
-  WIN_ROUNDS,
   Rng,
   NavGrid,
   computePose,
@@ -616,11 +618,14 @@ export class Room {
   }
 
   private startRound() {
-    if (this.roundNum === HALF_ROUNDS && !this.halfDone) {
+    const next = this.roundNum + 1;
+    if (swapsSidesBefore(next)) {
       this.halfDone = true;
+      // в овертайме — одинаковые деньги у всех, в основное время — стартовые
+      const ot = overtimeOf(next) > 0;
       for (const p of this.players) {
         p.team = (1 - p.team) as Team;
-        p.money = START_MONEY;
+        p.money = ot ? OT_MONEY : START_MONEY;
         p.primary = null;
         p.pistol = inst(DEFAULT_PISTOL);
         p.armor = 0;
@@ -711,7 +716,7 @@ export class Room {
       p.money = Math.min(MAX_MONEY, p.money + add);
     }
     this.events.push({ e: 'roundEnd', w: winner, why });
-    if (this.scores[winner] >= WIN_ROUNDS) {
+    if (this.scores[winner] >= winTarget(this.roundNum)) {
       this.phase = 'matchEnd';
       this.phaseEnd = this.time + MATCH_END_TIME;
       this.stats.matches++;

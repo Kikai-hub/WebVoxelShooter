@@ -6,6 +6,10 @@ import { AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, type WeaponDef } fro
 import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type Settings } from './api';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
+import { loadGunModels } from './game/weaponModels';
+
+// модели оружия грузятся в фоне, пока игрок в меню
+loadGunModels();
 
 const app = document.getElementById('app')!;
 let account: AccountInfo | null = null;
@@ -203,22 +207,37 @@ function showMenu(tab: Tab = 'play') {
       h('div', { class: 'panel-title' }, 'НОВОСТИ'),
       h('div', { class: 'card' }, h('b', {}, 'Воксельные раны'), h('span', {}, 'Каждое попадание оставляет дыру, голова может разлететься на кубики, тела лежат до конца раунда.')),
       h('div', { class: 'card' }, h('b', {}, 'Боты среднего уровня'), h('span', {}, 'Видят только то, что в поле зрения, слышат выстрелы и держат углы.')),
-      h('div', { class: 'card' }, h('b', {}, 'Три карты'), h('span', {}, '«Рыночная площадь», открытая «Пустошь» и тесный «Старый квартал» с крышей над двором. Карту выбирают игроки.')),
     );
+    // свежие обновления с сервера — сверху, над постоянными карточками
+    void api
+      .news()
+      .then((r) => {
+        const title = right.querySelector('.panel-title');
+        const fmt = (d: string) => (d ? new Date(d).toLocaleDateString('ru-RU') : '');
+        r.news.slice(0, 2).forEach((n, i) => {
+          const ul = h('ul', { class: 'news-list' }, ...n.items.map((s) => h('li', {}, s)));
+          const card = h('div', { class: 'card' + (i === 0 ? ' fresh' : '') }, h('small', {}, (i === 0 ? 'Последнее обновление · ' : '') + fmt(n.date)), h('b', {}, n.title), ul);
+          const after = right.querySelectorAll('.card.update')[i - 1] ?? title;
+          card.classList.add('update');
+          after?.after(card);
+        });
+        right.append(h('div', { class: 'version' }, `Версия ${r.version.commit}${r.version.date ? ' от ' + fmt(r.version.date) : ''}`));
+      })
+      .catch(() => {});
     const play = h('button', { class: 'play-btn' }, 'ИГРАТЬ');
     const count = h('div', { class: 'play-count' }, '');
     play.onclick = () => void startGame();
     const playBox = h('div', { class: 'play-box' }, play, count);
     body.append(left, center, right, playBox);
     agentView = new AgentView(canvas);
-    agentView.setAgent(0, lo.agent[0], lo.skin, WEAPONS.find((w) => w.key === lo.primary[0])?.kind);
+    agentView.setAgent(0, lo.agent[0], lo.skin, lo.primary[0]);
     const sideBtns = h('div', { class: 'side-switch' });
     for (const t of [0, 1]) {
       const b = h('button', { class: 'btn small' + (t === 0 ? ' active' : '') }, t === 0 ? 'Нападение' : 'Защита');
       b.onclick = () => {
         sideBtns.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
         b.classList.add('active');
-        agentView?.setAgent(t, lo.agent[t], lo.skin, WEAPONS.find((w) => w.key === lo.primary[t])?.kind);
+        agentView?.setAgent(t, lo.agent[t], lo.skin, lo.primary[t]);
       };
       sideBtns.append(b);
     }
@@ -305,7 +324,7 @@ function renderInventory(body: HTMLElement, center: HTMLElement, canvas: HTMLCan
       for (const s of SKINS) sw.append(Object.assign(h('i'), { style: `background:#${s.tint.toString(16).padStart(6, '0')}`, title: s.name } as any));
       it.append(sw);
       it.onclick = () => {
-        agentView?.setAgent(0, lo.agent[0], lo.skin, w.kind);
+        agentView?.setAgent(0, lo.agent[0], lo.skin, w.key);
         detail.innerHTML = '';
         detail.append(h('div', { class: 'panel-title' }, w.name), statBars(w), h('p', { class: 'hint' }, 'Раскраски — только косметика: на хитбоксы и баланс не влияют.'));
       };
@@ -334,7 +353,7 @@ function renderLoadout(body: HTMLElement, center: HTMLElement, canvas: HTMLCanva
     }
   };
   const render = () => {
-    agentView?.setAgent(side, lo.agent[side], lo.skin, WEAPONS.find((w) => w.key === lo.primary[side])?.kind);
+    agentView?.setAgent(side, lo.agent[side], lo.skin, lo.primary[side]);
     left.innerHTML = '';
     const sideTabs = h('div', { class: 'filters' });
     for (const s of [0, 1]) {
@@ -492,6 +511,16 @@ function renderSettings(body: HTMLElement) {
     }
   };
   acc.append(oldP, newP, chg, h('hr'), out, outAll, h('hr'), delP, del, accMsg, h('div', { class: 'hint' }, `Аккаунт создан ${new Date(account!.created).toLocaleDateString('ru-RU')}. Личных данных и почты не собираем.`));
+
+  // Титры: модели оружия под CC BY 4.0 требуют указать автора, лицензию и что изменено
+  const credits = h('div', { class: 'panel settings' });
+  body.append(credits);
+  const link = (href: string, text: string) => h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+  credits.append(
+    h('div', { class: 'panel-title' }, 'ТИТРЫ'),
+    h('p', { class: 'hint' }, 'Модели оружия: Low Poly Weapons Pack, автор Zsky (', link('https://www.patreon.com/Zsky', 'patreon.com/Zsky'), '). Лицензия ', link('https://creativecommons.org/licenses/by/4.0/', 'CC BY 4.0'), '. Изменения: масштаб, ориентация, материалы.'),
+    h('p', { class: 'hint' }, 'Звуки выстрелов: The Free Firearm Sound Library, Still North Media (CC0). Изменения: нарезка, сведение в моно.'),
+  );
 }
 
 // ---------- Игра ----------

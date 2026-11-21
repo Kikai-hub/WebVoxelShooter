@@ -3,6 +3,11 @@
 
 import * as THREE from 'three';
 import { SKINS, WEAPONS, type WeaponDef } from '../../../shared/src/index';
+import { cloneGun, gunModel, onGunModel } from './weaponModels';
+
+/** где правая перчатка держит рукоять (система root) и масштаб моделей от первого лица */
+const VM_GRIP = new THREE.Vector3(0.0, -0.025, -0.01);
+const VM_SCALE = 0.85;
 
 function box(w: number, h: number, d: number, color: number, x: number, y: number, z: number): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
@@ -10,7 +15,10 @@ function box(w: number, h: number, d: number, color: number, x: number, y: numbe
   return m;
 }
 
+/** Оружие: модель из пака, если загружена, иначе блочное. Начало — точка хвата, дуло вдоль −Z. */
 export function buildGun(def: WeaponDef, tint: number): THREE.Group {
+  const model = cloneGun(def.key, tint);
+  if (model) return model;
   const g = new THREE.Group();
   const t = new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.35);
   const metal = new THREE.Color(0x5a5d66).multiply(t).getHex();
@@ -97,6 +105,14 @@ export class ViewModel {
     this.flash.visible = false;
     this.gunHolder.add(this.flash);
     this.root.position.set(0.22, -0.24, -0.42);
+    // модель загрузилась позже блочной заглушки — пересобрать оружие в руках
+    onGunModel(() => {
+      for (const g of this.guns.values()) this.gunHolder.remove(g);
+      this.guns.clear();
+      const id = this.current;
+      this.current = -1;
+      if (id >= 0) this.setWeapon(id);
+    });
   }
 
   setTeam(team: number) {
@@ -112,17 +128,41 @@ export class ViewModel {
     if (id === this.current) return;
     this.current = id;
     for (const g of this.guns.values()) g.visible = false;
+    const def = WEAPONS[id];
+    const model = def ? gunModel(def.key) : null;
     let g = this.guns.get(id);
     if (!g) {
-      g = buildGun(WEAPONS[id] ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff);
+      g = buildGun(def ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff);
+      if (model) {
+        // модель: точка хвата — в правой перчатке
+        g.scale.setScalar(VM_SCALE);
+        g.position.copy(VM_GRIP);
+      }
       this.guns.set(id, g);
       this.gunHolder.add(g);
     }
     g.visible = true;
-    const def = WEAPONS[id];
-    const len = def?.kind === 'sniper' ? 0.65 : def?.kind === 'shotgun' ? 0.5 : def?.kind === 'rifle' ? 0.55 : def?.kind === 'smg' ? 0.38 : def?.kind === 'knife' ? 0.25 : 0.18;
-    this.flash.position.set(0, 0.02, -len);
-    this.gloveL.visible = this.sleeveL.visible = def?.kind !== 'pistol' && def?.kind !== 'knife' && def?.kind !== 'grenade';
+    const twoHands = def?.kind !== 'pistol' && def?.kind !== 'knife' && def?.kind !== 'grenade';
+    if (model) {
+      // правая перчатка — на рукояти модели, рукав уходит назад к краю экрана
+      this.glove.position.set(VM_GRIP.x + 0.03, VM_GRIP.y - 0.01, VM_GRIP.z + 0.01);
+      this.sleeve.position.set(VM_GRIP.x + 0.03, VM_GRIP.y - 0.02, VM_GRIP.z + 0.2);
+      this.flash.position.copy(model.muzzle).multiplyScalar(VM_SCALE).add(VM_GRIP);
+      // левая перчатка — на цевье модели, рукав тянется к ней от левого края экрана
+      if (model.fore) {
+        const f = model.fore.clone().multiplyScalar(VM_SCALE).add(VM_GRIP);
+        this.gloveL.position.set(f.x - 0.02, f.y - 0.03, f.z);
+        this.sleeveL.position.set(f.x - 0.1, f.y - 0.05, f.z + 0.17);
+      }
+    } else {
+      const len = def?.kind === 'sniper' ? 0.65 : def?.kind === 'shotgun' ? 0.5 : def?.kind === 'rifle' ? 0.55 : def?.kind === 'smg' ? 0.38 : def?.kind === 'knife' ? 0.25 : 0.18;
+      this.flash.position.set(0, 0.02, -len);
+      this.glove.position.set(0.04, -0.06, 0.05);
+      this.sleeve.position.set(0.04, -0.07, 0.24);
+      this.gloveL.position.set(-0.04, -0.03, -0.22);
+      this.sleeveL.position.set(-0.12, -0.04, -0.06);
+    }
+    this.gloveL.visible = this.sleeveL.visible = twoHands;
     this.switchT = 0.3;
   }
 

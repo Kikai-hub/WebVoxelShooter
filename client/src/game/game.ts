@@ -66,6 +66,7 @@ import { Sfx } from './audio';
 import { Debris } from './debris';
 import { ImpactMarks, Tracers } from './effects';
 import { Hud, TEAM_LABEL, slotList } from './hud';
+import { AgentAnimator } from './animator';
 import { MapRenderer } from './mapMesh';
 import { MAT_COLORS } from './atlas';
 import { Ragdoll } from './ragdoll';
@@ -95,6 +96,9 @@ interface CPlayer {
   renderPos: [number, number, number];
   renderYaw: number;
   renderPitch: number;
+  renderCrouch: boolean;
+  /** анимация тела (шаг, присед, прыжок, отдача, перезарядка) — только картинка */
+  anim: AgentAnimator;
 }
 
 function lerpAngle(a: number, b: number, t: number): number {
@@ -345,6 +349,7 @@ export class Game {
       <div class="pause-box">
         <h2>ПАУЗА</h2>
         <button data-a="resume" class="btn primary">Продолжить</button>
+        <button data-a="fullscreen" class="btn">На весь экран — Ctrl+W не закроет вкладку</button>
         <label>Чувствительность <input type="range" min="0.1" max="5" step="0.05" data-s="sens"></label>
         <label>Поле зрения <input type="range" min="60" max="110" step="1" data-s="fov"></label>
         <label><input type="checkbox" data-s="tracers"> Трассеры</label>
@@ -376,6 +381,7 @@ export class Game {
       }),
     );
     this.pauseEl.querySelector('[data-a=resume]')!.addEventListener('click', () => this.lock());
+    this.pauseEl.querySelector('[data-a=fullscreen]')!.addEventListener('click', () => void this.enterFullscreen());
     this.pauseEl.querySelector('[data-a=exit]')!.addEventListener('click', () => this.exit());
   }
 
@@ -437,7 +443,9 @@ export class Game {
           const first = this.myTeam < 0;
           this.myTeam = m.team;
           this.vm.setTeam(m.team);
-          if (first) this.faceSpawnDirection();
+          // новая сторона приходит чуть позже начала раунда — разворачиваемся заново
+          if (first || this.st?.ph === 'freeze') this.faceSpawnDirection();
+          if (!first) this.hud.showCenter('Смена сторон', `Теперь ты играешь за: ${TEAM_LABEL[m.team]}`, 5, undefined, 'warn');
         }
         if (wasSpec !== m.spectator) this.pending.length = 0;
         // сервер сам меняет оружие при покупке и в начале раунда — следуем за ним
@@ -584,7 +592,7 @@ export class Game {
   private getPlayer(id: number): CPlayer {
     let p = this.players.get(id);
     if (!p) {
-      p = { id, body: null, snaps: [], lastTick: 0, dead: false, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [0, 0, 0], renderYaw: 0, renderPitch: 0 };
+      p = { id, body: null, snaps: [], lastTick: 0, dead: false, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [0, 0, 0], renderYaw: 0, renderPitch: 0, renderCrouch: false, anim: new AgentAnimator() };
       this.players.set(id, p);
     }
     return p;
@@ -620,6 +628,7 @@ export class Game {
         const isBot = this.pub(e.s)?.b ?? false;
         if (e.s === this.myId && this.predAlive) break; // свои выстрелы уже нарисованы
         const shooter = this.players.get(e.s);
+        shooter?.anim.fire(WEAPONS[this.pub(e.s)?.w ?? 1]?.kind ?? 'rifle');
         // начало трассера — примерно у дула оружия
         const yaw = shooter?.renderYaw ?? 0;
         const ax = e.a[0] + Math.cos(yaw) * 0.12,
@@ -628,7 +637,7 @@ export class Game {
         if (e.h === 1) this.markImpact(e.a, e.b);
         const d = Math.hypot(e.a[0] - eye.x, e.a[1] - eye.y, e.a[2] - eye.z);
         const w = WEAPONS[this.pub(e.s)?.w ?? 1];
-        this.sfx.shot(w?.kind ?? 'rifle', d, this.panOf(e.a[0], e.a[2]));
+        this.sfx.shot(w?.kind ?? 'rifle', d, this.panOf(e.a[0], e.a[2]), w?.key);
         break;
       }
       case 'wound': {
@@ -646,7 +655,7 @@ export class Game {
         if (body) {
           // поза в момент смерти
           if (e.v === this.myId) computePose(this.pred.x, this.pred.y, this.pred.z, this.yaw, this.pitch, this.pred.crouch, this.pose);
-          else if (p.snaps.length && p.lastTick >= this.latestTick - 16) computePose(p.renderPos[0], p.renderPos[1], p.renderPos[2], p.renderYaw, p.renderPitch, false, this.pose);
+          else if (p.snaps.length && p.lastTick >= this.latestTick - 16) computePose(p.renderPos[0], p.renderPos[1], p.renderPos[2], p.renderYaw, p.renderPitch, p.renderCrouch, this.pose, p.anim.pose);
           else {
             // враг был скрыт от нас: тело появляется там, где он погиб
             p.renderPos = [e.at[0], e.at[1], e.at[2]];
@@ -872,6 +881,8 @@ export class Game {
     document.addEventListener('keyup', this.onKeyUp);
     document.addEventListener('contextmenu', this.onContext);
     window.addEventListener('blur', this.onBlur);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+    document.addEventListener('fullscreenchange', this.onFullscreenChange);
   }
 
   private unbindInput() {
@@ -884,6 +895,9 @@ export class Game {
     document.removeEventListener('keyup', this.onKeyUp);
     document.removeEventListener('contextmenu', this.onContext);
     window.removeEventListener('blur', this.onBlur);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+    document.removeEventListener('fullscreenchange', this.onFullscreenChange);
+    (navigator as any).keyboard?.unlock?.();
     window.removeEventListener('resize', this.resize);
   }
 
@@ -967,6 +981,31 @@ export class Game {
     if (!this.hud.chatOpen && !this.buyOpen) this.enterSoftLock();
   };
 
+  /**
+   * Полный экран + захват клавиатуры (Chrome, Edge): браузер отдаёт странице и Ctrl+W, и Ctrl+N,
+   * поэтому присед на Ctrl с движением на W больше не закрывает вкладку. Выход — удерживать Esc.
+   */
+  private async enterFullscreen() {
+    try {
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+      await (navigator as any).keyboard?.lock?.();
+    } catch {
+      /* браузер не поддерживает — остаётся подтверждение при закрытии */
+    }
+    this.lock();
+  }
+
+  private onFullscreenChange = () => {
+    if (!document.fullscreenElement) (navigator as any).keyboard?.unlock?.();
+  };
+
+  /** Пока идёт игра, закрытие вкладки (в том числе случайное Ctrl+W) спрашивает подтверждение. */
+  private onBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (!this.running) return;
+    e.preventDefault();
+    e.returnValue = '';
+  };
+
   private onContext = (e: Event) => e.preventDefault();
   private onBlur = () => {
     this.keys.clear();
@@ -1032,12 +1071,15 @@ export class Game {
       this.toggleBuy();
       return;
     }
-    if (code === 'Escape' && this.softLock) {
+    // Esc — пауза (в полном экране с захватом клавиатуры браузер сам мышь не отпускает)
+    if (code === 'Escape' && (this.softLock || this.realLocked())) {
       this.pause();
       return;
     }
     if (!this.locked()) return;
-    if (code === 'ControlLeft' || code === 'ControlRight') e.preventDefault();
+    // во время игры сочетания с Ctrl не должны открывать окна браузера (сохранить, закладка, поиск…);
+    // Ctrl+W/N/T браузер так не отдаёт — от них защищает полный экран и подтверждение закрытия
+    if (e.ctrlKey || code === 'ControlLeft' || code === 'ControlRight') e.preventDefault();
     if (code === 'Digit1') this.selectSlot(SLOT_PRIMARY);
     if (code === 'Digit2') this.selectSlot(SLOT_PISTOL);
     if (code === 'Digit3') this.selectSlot(SLOT_KNIFE);
@@ -1173,7 +1215,7 @@ export class Game {
     const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + this.localRecoil * (this.pred.crouch ? 0.7 : 1);
     this.localRecoil = Math.min(this.localRecoil + def.recoil, def.recoilMax);
     this.vm.fire();
-    this.sfx.shot(def.kind, 0, 0);
+    this.sfx.shot(def.kind, 0, 0, def.key);
     if (def.kind === 'knife') return;
     const ex = this.pred.x,
       ey = this.pred.y + eyeHeight(this.pred),
@@ -1360,6 +1402,7 @@ export class Game {
       const visible = snaps.length > 0 && p.lastTick >= this.latestTick && (snaps[snaps.length - 1].flags & SF_ALIVE) !== 0;
       if (!visible) {
         if (p.body) p.body.group.visible = false;
+        p.anim.reset(); // появится в другом месте — это не шаг
         continue;
       }
       let a = snaps[0],
@@ -1384,12 +1427,15 @@ export class Game {
       p.renderPos = [x, y, z];
       p.renderYaw = yaw;
       p.renderPitch = pitch;
+      p.renderCrouch = crouch;
       const body = this.ensureBody(p);
       if (!body) continue;
       body.group.visible = p.id !== this.specTarget || this.predAlive;
-      computePose(x, y, z, yaw, pitch, crouch, body.pose);
-      body.applyPose(body.pose);
-      body.setWeapon(WEAPONS[b.weapon]?.kind ?? 'pistol');
+      const kind = WEAPONS[b.weapon]?.kind ?? 'pistol';
+      const an = p.anim.update(dt, { x, y, z, yaw, crouch, onGround: (b.flags & SF_ONGROUND) !== 0, reloading: (b.flags & SF_RELOADING) !== 0, weaponKind: kind });
+      computePose(x, y, z, yaw, pitch, crouch, body.pose, an);
+      body.applyPose(body.pose, an);
+      body.setWeapon(kind, WEAPONS[b.weapon]?.key);
       // шаги
       const sp = Math.hypot(x - p.lastPos[0], z - p.lastPos[2]) / Math.max(dt, 1e-3);
       p.lastPos = [x, y, z];
@@ -1581,7 +1627,7 @@ export class Game {
     if (opts.explode) body.explodeHead(this.debris, dir, this.settings.blood);
     if (opts.kill) {
       body.ragdoll = new Ragdoll(this.info.map, body.pose, [dir[0] * 3.5, 0.8, dir[2] * 3.5], opts.explode ? 0 : 1, !!opts.explode);
-      const fake: CPlayer = { id: 100 + Math.floor(Math.random() * 1000), body, snaps: [], lastTick: 0, dead: true, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [x, this.pred.y, z], renderYaw: 0, renderPitch: 0 };
+      const fake: CPlayer = { id: 100 + Math.floor(Math.random() * 1000), body, snaps: [], lastTick: 0, dead: true, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [x, this.pred.y, z], renderYaw: 0, renderPitch: 0, renderCrouch: false, anim: new AgentAnimator() };
       this.players.set(fake.id, fake);
       if (this.st && !this.st.pl[fake.id]) (this.st.pl as any)[fake.id] = { i: fake.id, n: 'манекен', t: team, b: true, a: false, k: 0, d: 0, hp: 0, m: -1, w: 5, ag: 0, sk: 0, c: true, bomb: false };
     }

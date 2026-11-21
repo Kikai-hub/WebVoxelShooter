@@ -199,6 +199,7 @@ export function buildMedina(): MapInfo {
   wall(m, 7, 22, 26, 34, 2.5, MAT.SAND);
   m.fill(7, 22, 26, 22.5, FLOOR + 2.5, FLOOR + 3, MAT.SAND); // парапет
   for (let i = 0; i < 5; i++) m.fill(12, 36.5 - i * 0.5, 14, 37 - i * 0.5, FLOOR, FLOOR + (i + 1) * 0.5, MAT.SAND);
+  m.fill(12, 34, 14, 34.5, FLOOR, FLOOR + 2.5, MAT.SAND); // площадка: верхняя ступень вплотную к крыше
   // Петляющий переулок к A: стенки заставляют идти змейкой
   wall(m, 1, 15, 4.5, 16, 6, MAT.PLASTER);
   wall(m, 3.5, 22, 7, 23, 6, MAT.PLASTER);

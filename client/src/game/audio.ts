@@ -1,11 +1,57 @@
-// Синтезированные звуки (WebAudio): выстрелы, шаги, попадания, бомба.
-// Без внешних файлов, чтобы клиент оставался лёгким.
+// Звуки (WebAudio). Выстрелы — записи настоящего оружия (public/sounds, по 3 варианта на ствол,
+// грузятся в фоне); пока не загрузились — синтезированный выстрел. Шаги, попадания, бомба — синтез.
+
+/** ключ оружия → файлы выстрелов и громкость относительно самого громкого (снайперка) */
+const SHOT_SOUNDS: Record<string, { n: number; gain: number }> = {
+  osa: { n: 3, gain: 0.5 },
+  gyurza: { n: 3, gain: 0.65 },
+  shmel: { n: 1, gain: 0.55 },
+  molot: { n: 3, gain: 0.85 },
+  vikhr: { n: 3, gain: 0.7 },
+  sokol: { n: 3, gain: 1 },
+};
 
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
+  /** сырые файлы (скачиваются сразу) и раскодированные буферы (после создания AudioContext) */
+  private raw = new Map<string, ArrayBuffer>();
+  private buffers = new Map<string, AudioBuffer[]>();
+  private lastVariant = new Map<string, number>();
+
+  constructor() {
+    // скачиваем заранее, пока игрок в меню; раскодируем, когда появится AudioContext
+    for (const [key, s] of Object.entries(SHOT_SOUNDS))
+      for (let i = 0; i < s.n; i++) {
+        const name = `${key}_${i}`;
+        fetch(`${import.meta.env.BASE_URL}sounds/${name}.wav`)
+          .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
+          .then((ab) => {
+            this.raw.set(name, ab);
+            if (this.ctx) this.decode(name);
+          })
+          .catch(() => {
+            /* нет файла — останется синтезированный звук */
+          });
+      }
+  }
+
+  private decode(name: string) {
+    const ab = this.raw.get(name);
+    if (!ab || !this.ctx) return;
+    this.raw.delete(name);
+    const key = name.slice(0, name.lastIndexOf('_'));
+    this.ctx
+      .decodeAudioData(ab)
+      .then((buf) => {
+        const list = this.buffers.get(key) ?? [];
+        list.push(buf);
+        this.buffers.set(key, list);
+      })
+      .catch(() => {});
+  }
 
   private ensure(): AudioContext | null {
     if (!this.ctx) {
@@ -17,6 +63,7 @@ export class Sfx {
         this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
         const d = this.noise.getChannelData(0);
         for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+        for (const name of [...this.raw.keys()]) this.decode(name);
       } catch {
         return null;
       }
@@ -30,10 +77,36 @@ export class Sfx {
     this.ensure();
   }
 
-  /** Выстрел: шумовой удар + низкий «бум». dist — расстояние до слушателя. */
-  shot(kind: string, dist = 0, pan = 0) {
+  /**
+   * Выстрел. key — оружие (osa, vikhr…), kind — вид (для запасного синтеза), dist — до слушателя, м.
+   * Запись: вариант не повторяется подряд, высота чуть плавает, вдали — тише и глуше.
+   */
+  shot(kind: string, dist = 0, pan = 0, key = '') {
     const ctx = this.ensure();
     if (!ctx || !this.noise) return;
+    const bufs = this.buffers.get(key);
+    const conf = SHOT_SOUNDS[key];
+    if (bufs?.length && conf) {
+      let v = Math.floor(Math.random() * bufs.length);
+      if (bufs.length > 1 && v === this.lastVariant.get(key)) v = (v + 1) % bufs.length;
+      this.lastVariant.set(key, v);
+      const t = ctx.currentTime;
+      const src = ctx.createBufferSource();
+      src.buffer = bufs[v];
+      src.playbackRate.value = 0.96 + Math.random() * 0.08;
+      // расстояние: громкость падает, высокие частоты гаснут быстрее
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = Math.max(900, 20000 / (1 + dist * 0.09));
+      const g = ctx.createGain();
+      g.gain.value = conf.gain * Math.max(0.04, 1 / (1 + dist * 0.1));
+      const p = ctx.createStereoPanner();
+      p.pan.value = Math.max(-1, Math.min(1, pan));
+      src.connect(lp).connect(g).connect(p).connect(this.master!);
+      // звук идёт со скоростью звука: далёкий выстрел слышен чуть позже
+      src.start(t + Math.min(0.25, dist / 343));
+      return;
+    }
     const vol = Math.max(0.03, 1 / (1 + dist * 0.12)) * (kind === 'sniper' ? 1.3 : kind === 'pistol' ? 0.7 : 1);
     const t = ctx.currentTime;
     const src = ctx.createBufferSource();

@@ -37,7 +37,11 @@ export const BOT_LEVELS: Record<string, { react: [number, number]; aimErr: [numb
   hard: { react: [0.25, 0.4], aimErr: [0.06, 0.12], errDecay: 2.6, sway: 0.016, turnRate: 9, headChance: 0.2, fov: 1.3, stopToShoot: 0.85, pause: [0.2, 0.45] },
 };
 
-type Goal = { x: number; z: number; kind: 'site' | 'hold' | 'bomb' | 'investigate' | 'plant' | 'defuse' | 'guard'; until: number; lookYaw: number };
+/** y — высота ног у цели (крыша, площадка); без неё — нижний уровень. */
+type Goal = { x: number; z: number; y?: number; kind: 'site' | 'hold' | 'bomb' | 'investigate' | 'plant' | 'defuse' | 'guard'; until: number; lookYaw: number };
+/** Доля ботов, которые занимают второй ярус у точки, если он там есть. */
+const PERCH_CHANCE_CT = 0.3;
+const PERCH_CHANCE_T = 0.15;
 
 function angDiff(a: number, b: number): number {
   let d = b - a;
@@ -190,7 +194,7 @@ export class Bot {
     const d = Math.hypot(victim.st.x - this.p.st.x, victim.st.z - this.p.st.z);
     // защитники подтягиваются на сообщение об убийстве
     if (this.p.team === TEAM_CT && d < 25 && !this.target && this.room.phase === 'live' && this.rng.next() < 0.6) {
-      this.setGoal(victim.st.x, victim.st.z, 'investigate', 10, yawTo(victim.st.x - this.p.st.x, victim.st.z - this.p.st.z));
+      this.setGoal(victim.st.x, victim.st.z, 'investigate', 10, yawTo(victim.st.x - this.p.st.x, victim.st.z - this.p.st.z), victim.st.y);
     }
   }
 
@@ -334,9 +338,9 @@ export class Bot {
 
   // ---------- Мышление ----------
 
-  private setGoal(x: number, z: number, kind: Goal['kind'], dur: number, lookYaw: number) {
-    this.goal = { x, z, kind, until: this.room.time + dur, lookYaw };
-    this.path = this.room.nav.findPath(this.p.st.x, this.p.st.z, x, z);
+  private setGoal(x: number, z: number, kind: Goal['kind'], dur: number, lookYaw: number, y?: number) {
+    this.goal = { x, z, y, kind, until: this.room.time + dur, lookYaw };
+    this.path = this.room.nav.findPath(this.p.st.x, this.p.st.z, x, z, this.p.st.y, y);
     this.pathIdx = 0;
     this.stuckAt = this.room.time;
     this.stuckX = this.p.st.x;
@@ -371,8 +375,11 @@ export class Bot {
         const pt = r.nav.randomIn(s.x0 + 2, s.z0 + 2, s.x1 - 2, s.z1 - 2, rnd) ?? [(s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2];
         this.setGoal(pt[0], pt[1], 'plant', 90, this.yaw);
       } else {
-        const pt = r.nav.randomIn(s.x0, s.z0, s.x1, s.z1, rnd) ?? [(s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2];
-        this.setGoal(pt[0], pt[1], 'site', 90, Math.PI);
+        // иногда — на крышу или площадку у точки: прикрывать сверху
+        const perch = rnd() < PERCH_CHANCE_T ? r.nav.highIn(s.x0 - 6, s.z0 - 6, s.x1 + 6, s.z1 + 6, rnd) : null;
+        const pt = perch ?? r.nav.randomIn(s.x0, s.z0, s.x1, s.z1, rnd) ?? [(s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2];
+        const ct = spawnCenter(info, TEAM_CT);
+        this.setGoal(pt[0], pt[1], 'site', 90, perch ? yawTo(ct[0] - pt[0], ct[1] - pt[1]) : Math.PI, pt[2]);
       }
     } else {
       if (b.status === 'planted') {
@@ -381,17 +388,19 @@ export class Bot {
       }
       // роли: 2 на A, 2 на B, 1 в центре
       const roleSite = (info.ctRoles ?? [0, 1, 0, 1, 2])[this.role % 5];
-      let pt: [number, number] | null;
+      let pt: [number, number, number?] | null;
       if (roleSite === 2) pt = r.nav.coverIn(info.mid[0] - 4, info.mid[1] - 2, info.mid[0] + 4, info.mid[1] + 4, rnd);
       else {
         const s = info.sites[roleSite];
-        pt = r.nav.coverIn(s.x0, s.z0 + 3, s.x1, s.z1, rnd);
+        // часть защитников держит точку с крыши или площадки рядом, если она есть
+        pt = rnd() < PERCH_CHANCE_CT ? r.nav.highIn(s.x0 - 6, s.z0 - 6, s.x1 + 6, s.z1 + 6, rnd) : null;
+        pt ??= r.nav.coverIn(s.x0, s.z0 + 3, s.x1, s.z1, rnd);
       }
       pt ??= [info.mid[0], info.mid[1]];
       // держит угол: смотрит на юг, в сторону подходов нападения
       const ts = spawnCenter(info, TEAM_T);
       const look = yawTo(ts[0] - pt[0], ts[1] - pt[1]);
-      this.setGoal(pt[0], pt[1], 'hold', 200, look);
+      this.setGoal(pt[0], pt[1], 'hold', 200, look, pt[2]);
     }
   }
 
@@ -553,7 +562,9 @@ export class Bot {
       // ---- Передвижение ----
       const g = this.goal;
       const dGoal = Math.hypot(g.x - p.st.x, g.z - p.st.z);
-      const arrived = dGoal < 0.8 || (!this.path && dGoal < 2);
+      // цель на крыше: стоять под ней на земле — ещё не пришёл
+      const levelOk = g.y === undefined || Math.abs(g.y - p.st.y) < 1;
+      const arrived = levelOk && (dGoal < 0.8 || (!this.path && dGoal < 2));
       if (!arrived && this.path && this.pathIdx < this.path.length) {
         const [wx, wz] = this.path[this.pathIdx];
         const dx = wx - p.st.x,
@@ -563,7 +574,7 @@ export class Bot {
         moveZ = dz;
         wantMove = true;
       } else if (!arrived && !this.path && this.thinkTick % 32 === 0) {
-        this.setGoal(g.x, g.z, g.kind, g.until - now, g.lookYaw);
+        this.setGoal(g.x, g.z, g.kind, g.until - now, g.lookYaw, g.y);
       }
       this.holding = arrived || !wantMove;
       if (arrived || !wantMove) {
@@ -600,7 +611,7 @@ export class Bot {
             if (this.stuckCount > 2) {
               this.goal = null;
               this.stuckCount = 0;
-            } else this.setGoal(g.x + this.rng.range(-1, 1), g.z + this.rng.range(-1, 1), g.kind, g.until - now, g.lookYaw);
+            } else this.setGoal(g.x + this.rng.range(-1, 1), g.z + this.rng.range(-1, 1), g.kind, g.until - now, g.lookYaw, g.y);
           } else {
             this.stuckAt = now;
             this.stuckX = p.st.x;

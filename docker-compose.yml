@@ -1,10 +1,13 @@
-# Запуск: cp .env.example .env (вписать домен) && docker compose up -d
+# Установка одной командой: см. deploy/install.sh. Вручную: cp .env.example .env (вписать домен) && bash deploy/update.sh --force
 services:
   game:
     build:
       context: .
       target: game
-    image: ${VTS_IMAGE:-ghcr.io/your-account/voxel-tactical}-game:latest
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        GIT_DATE: ${GIT_DATE:-}
+    image: ${VTS_IMAGE:-voxel-tactical}-game:latest
     env_file: .env
     environment:
       GAME_PORT: "8080"
@@ -27,7 +30,7 @@ services:
     build:
       context: .
       target: proxy
-    image: ${VTS_IMAGE:-ghcr.io/your-account/voxel-tactical}-proxy:latest
+    image: ${VTS_IMAGE:-voxel-tactical}-proxy:latest
     env_file: .env
     ports:
       - "80:80"

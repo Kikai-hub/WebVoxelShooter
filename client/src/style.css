@@ -202,6 +202,30 @@ input {
 .mode.active {
   border-left-color: var(--accent);
 }
+/* новости об обновлениях: свежая — с акцентной полосой */
+.card.fresh {
+  border-left-color: var(--accent);
+  background: rgba(255, 255, 255, 0.07);
+}
+.card small {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+.news-list {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+.news-list li {
+  margin: 2px 0;
+}
+.panel .version {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.7;
+}
 .play-box {
   position: absolute;
   right: 24px;

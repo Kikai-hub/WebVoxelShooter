@@ -237,6 +237,25 @@ interface Bomb {
 
 const HIST_STRIDE = 7;
 
+/**
+ * Карты и навсетки собираются один раз на процесс: во время игры они не меняются
+ * (сколы стен — только картинка), а смена карты между матчами тогда не тормозит тик.
+ */
+const mapCache = new Map<string, { info: MapInfo; nav: NavGrid }>();
+function loadedMap(id: string): { info: MapInfo; nav: NavGrid } {
+  let m = mapCache.get(id);
+  if (!m) {
+    const info = MAPS[id]();
+    m = { info, nav: new NavGrid(info.map, [...info.spawns[0], ...info.spawns[1]]) };
+    mapCache.set(id, m);
+  }
+  return m;
+}
+/** Собрать все карты заранее (при старте сервера, до первого тика). */
+export function preloadMaps() {
+  for (const id of Object.keys(MAPS)) loadedMap(id);
+}
+
 export class Room {
   info!: MapInfo;
   nav!: NavGrid;
@@ -297,8 +316,9 @@ export class Room {
 
   loadMap(id: string) {
     this.mapId = id;
-    this.info = MAPS[id]();
-    this.nav = new NavGrid(this.info.map);
+    const m = loadedMap(id);
+    this.info = m.info;
+    this.nav = m.nav;
   }
 
   private makeBot(p: Player) {
@@ -590,8 +610,8 @@ export class Room {
       p.deaths = 0;
       p.nades = [0, 0, 0];
     }
-    // команды по слотам: первая половина — нападение
-    for (const p of this.players) p.team = p.id < TEAM_SIZE ? TEAM_T : TEAM_CT;
+    // Стороны не сбрасываем: новый матч начинается той стороной, которой закончился прошлый
+    // (иначе после смены сторон в середине матча игрока молча перекидывало бы обратно).
     this.startRound();
   }
 
@@ -854,6 +874,12 @@ export class Room {
 
   step() {
     const t0 = performance.now();
+    // обновление сервера: если живых людей в комнате нет, не ждём конца матча с ботами
+    if (this.draining && this.conns.size === 0) {
+      this.onDrained?.();
+      this.onDrained = null;
+      return;
+    }
     this.tick++;
     const now = this.time;
     for (const p of this.players) {

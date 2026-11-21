@@ -17,9 +17,11 @@ import {
   POSE_STRIDE,
   SKINS,
   hash32,
+  type PoseAnim,
 } from '../../../shared/src/index';
 import type { Debris } from './debris';
 import { LIMB_SPLIT, Ragdoll, SEG_COUNT } from './ragdoll';
+import { cloneGun, gunModel } from './weaponModels';
 
 const FLESH = 0x5a0f0f;
 const WOUND_RING = 0x7a0d0d;
@@ -151,20 +153,40 @@ export class VoxelBody {
       this.parts.push(pm);
       this.group.add(mesh);
     }
-    // оружие в руках (третье лицо) — дочерний объект правой руки
+    // оружие в руках (третье лицо): своё положение — точка хвата правой руки, ствол вдоль −Z
+    this.gunHolder.matrixAutoUpdate = false;
+    this.group.add(this.gunHolder);
     this.gun = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.5), new THREE.MeshLambertMaterial({ color: 0x333333 }));
-    this.gun.position.set(-0.05, -0.36, -0.12);
-    this.gun.rotation.x = -1.25;
-    this.parts[PART_ARM_R].mesh.add(this.gun);
+    this.gunHolder.add(this.gun);
   }
 
-  setWeapon(kind: string) {
-    if (kind === this.gunKind) return;
-    this.gunKind = kind;
+  private gunHolder = new THREE.Object3D();
+  private gunModel: THREE.Group | null = null;
+
+  /** Оружие в руках: модель из пака по ключу (vikhr, osa…), если загружена, иначе коробка по виду. */
+  setWeapon(kind: string, key = '') {
+    const model = key && kind !== 'none' ? gunModel(key) : null;
+    const state = model ? 'm:' + key : 'b:' + kind;
+    if (state === this.gunKind) return;
+    this.gunKind = state;
+    if (this.gunModel) {
+      this.gunHolder.remove(this.gunModel);
+      this.gunModel = null;
+    }
+    if (model) {
+      this.gunModel = cloneGun(key, SKINS[this.skin]?.tint ?? 0xffffff);
+      if (this.gunModel) this.gunHolder.add(this.gunModel);
+      this.gun.visible = false;
+      return;
+    }
     this.gun.visible = kind !== 'none';
-    const len = kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'grenade' ? 0.1 : kind === 'sniper' ? 0.75 : kind === 'smg' ? 0.38 : 0.55;
-    this.gun.scale.set(1, 1, len / 0.5);
-    this.gun.position.set(-0.05 + (kind === 'pistol' || kind === 'knife' ? 0.02 : -0.02), -0.36, -0.12 - (len - 0.5) * 0.4);
+    const len = kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'grenade' ? 0.1 : kind === 'sniper' ? 0.8 : kind === 'smg' ? 0.4 : kind === 'shotgun' ? 0.62 : 0.6;
+    // сколько оружия позади кисти: приклад упирается в плечо, у пистолета почти ничего
+    const behind = kind === 'pistol' ? 0.04 : kind === 'knife' || kind === 'grenade' ? 0 : kind === 'smg' ? 0.14 : kind === 'sniper' ? 0.22 : 0.18;
+    const thick = kind === 'pistol' ? 0.6 : kind === 'knife' ? 0.35 : kind === 'grenade' ? 1 : 1;
+    this.gun.scale.set(kind === 'knife' ? 0.3 : kind === 'grenade' ? 1.1 : 0.85, thick, len / 0.5);
+    // центр коробки: вперёд от кисти на len/2 − behind, чуть выше кисти (рукоять под стволом)
+    this.gun.position.set(0, kind === 'grenade' ? 0 : 0.045, -(len / 2 - behind));
     const tint = SKINS[this.skin]?.tint ?? 0xffffff;
     (this.gun.material as THREE.MeshLambertMaterial).color.set(GUN_COLORS[kind] ?? 0x333333).multiply(new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.4));
   }
@@ -184,14 +206,53 @@ export class VoxelBody {
     return out;
   }
 
-  /** Применить позу живого игрока (6 частей, конечности прямые). */
-  applyPose(pose: Float32Array) {
+  /** Текущий сгиб суставов живой позы (локти, колени), чтобы не пересчитывать воксели без нужды. */
+  private jointAngle = new Map<number, number>();
+  private jointM = new THREE.Matrix4();
+  private jointR = new THREE.Matrix4();
+  private gunFallback = new THREE.Matrix4();
+
+  /**
+   * Применить позу. Без anim — поза хитбоксов: конечности прямые, оружие в правой руке.
+   * С anim — живая поза: колени и локти согнуты, оружие в точке хвата (только картинка).
+   */
+  applyPose(pose: Float32Array, anim?: PoseAnim) {
     for (let p = 0; p < PART_COUNT; p++) {
       const pm = this.parts[p];
       this.poseMatrix(pose, p, pm.mesh.matrix);
       pm.mesh.matrixWorldNeedsUpdate = true;
-      if (pm.bend) this.setBend(pm, null);
     }
+    this.setJoint(PART_LEG_L, anim ? -anim.kneeL : 0);
+    this.setJoint(PART_LEG_R, anim ? -anim.kneeR : 0);
+    this.setJoint(PART_ARM_L, anim ? anim.elbowL : 0);
+    this.setJoint(PART_ARM_R, anim ? anim.elbowR : 0);
+    if (anim) this.poseMatrix(anim.gun, 0, this.gunHolder.matrix);
+    else {
+      // как раньше: оружие продолжает прямую правую руку
+      this.gunHolder.matrix.copy(this.parts[PART_ARM_R].mesh.matrix);
+      this.gunHolder.matrix.multiply(this.gunFallback.makeTranslation(-0.03, -0.33, -0.02));
+      this.gunHolder.matrix.multiply(this.gunFallback.makeRotationX(-1.25));
+    }
+    this.gunHolder.matrixWorldNeedsUpdate = true;
+  }
+
+  /** Сгиб в суставе: нижние воксели (предплечье, голень) поворачиваются вокруг оси X части. */
+  private setJoint(part: number, angle: number) {
+    const pm = this.parts[part];
+    if (Math.abs(angle) < 0.01) angle = 0;
+    const prev = this.jointAngle.get(part) ?? 0;
+    // ниже порога глаз разницы не видит, а пересчёт сотни вокселей не бесплатный
+    if (Math.abs(angle - prev) < 0.015 && (angle === 0) === !pm.bend) return;
+    this.jointAngle.set(part, angle);
+    if (angle === 0) {
+      if (pm.bend) this.setBend(pm, null);
+      return;
+    }
+    const jy = -(pm.ny * BVOX) / 2 + pm.split * BVOX;
+    this.jointM.makeTranslation(0, jy, 0);
+    this.jointM.multiply(this.jointR.makeRotationX(angle));
+    this.jointM.multiply(this.jointR.makeTranslation(0, -jy, 0));
+    this.setBend(pm, this.jointM);
   }
 
   private inv = new THREE.Matrix4();
@@ -199,6 +260,7 @@ export class VoxelBody {
 
   /** Применить сегменты рэгдолла: голова, торс и по два звена на каждую конечность. */
   applySegments(seg: Float32Array) {
+    for (const p of [PART_ARM_L, PART_ARM_R, PART_LEG_L, PART_LEG_R]) this.jointAngle.set(p, NaN); // сгибы теперь задаёт рэгдолл
     this.poseMatrix(seg, 0, this.parts[PART_HEAD].mesh.matrix);
     this.poseMatrix(seg, 1, this.parts[PART_TORSO].mesh.matrix);
     this.parts[PART_HEAD].mesh.matrixWorldNeedsUpdate = true;

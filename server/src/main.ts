@@ -6,18 +6,63 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
 import { decodeCmds, DT, type ClientMsg } from '../../shared/src/index';
 import { AccountStore, type Account } from './accounts';
-import { Room, type Conn } from './room';
+import { preloadMaps, Room, type Conn } from './room';
+import { execFileSync } from 'node:child_process';
+import { timingSafeEqual } from 'node:crypto';
+
+// ---------- Версия и новости ----------
+// Версия: из переменных сборки (Docker, см. deploy/update.sh), иначе — из git (разработка).
+function gitInfo(): { commit: string; date: string } {
+  if (process.env.GIT_COMMIT && process.env.GIT_COMMIT !== 'dev') return { commit: process.env.GIT_COMMIT.slice(0, 7), date: process.env.GIT_DATE ?? '' };
+  try {
+    const out = execFileSync('git', ['log', '-1', '--format=%h|%cI'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const [commit, date] = out.split('|');
+    return { commit, date };
+  } catch {
+    return { commit: 'dev', date: '' };
+  }
+}
+const VERSION = gitInfo();
+interface NewsItem {
+  date: string;
+  title: string;
+  items: string[];
+}
+/** Новости — из news.json в корне проекта (пишутся вручную при каждом обновлении). */
+function loadNews(): NewsItem[] {
+  try {
+    const raw = JSON.parse(readFileSync(resolve(process.env.NEWS_FILE ?? 'news.json'), 'utf8'));
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((n) => n && typeof n.title === 'string' && Array.isArray(n.items))
+      .map((n) => ({ date: String(n.date ?? ''), title: String(n.title).slice(0, 80), items: n.items.slice(0, 6).map((s: unknown) => String(s).slice(0, 200)) }))
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+const NEWS = loadNews();
 
 const PORT = Number(process.env.GAME_PORT ?? 8080);
 const DATA_DIR = resolve(process.env.DATA_DIR ?? 'data');
 const STATIC_DIR = resolve(process.env.STATIC_DIR ?? 'dist/client');
 const BOT_LEVEL = process.env.BOT_LEVEL ?? 'medium';
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
+// админ-команды выключены, если секрет пустой, короткий или остался из примера .env.example
+const ADMIN_ENABLED = ADMIN_SECRET.length >= 24 && !/change-me/i.test(ADMIN_SECRET);
+if (ADMIN_SECRET && !ADMIN_ENABLED) console.warn('ADMIN_SECRET слишком короткий или из примера — админ-команды выключены');
+function adminSecretOk(given: unknown): boolean {
+  if (!ADMIN_ENABLED || typeof given !== 'string') return false;
+  const a = Buffer.from(given),
+    b = Buffer.from(ADMIN_SECRET);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const accounts = new AccountStore(DATA_DIR);
 const START_MAPS = ['market', 'wasteland', 'quarter', 'caravan', 'medina'];
+preloadMaps();
 const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))), process.env.START_MAP ?? START_MAPS[Math.floor(Math.random() * START_MAPS.length)]);
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
@@ -99,6 +144,9 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
+  '.obj': 'text/plain; charset=utf-8',
+  '.mtl': 'text/plain; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
@@ -115,7 +163,8 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const ext = extname(file);
   res.writeHead(200, {
     'content-type': MIME[ext] ?? 'application/octet-stream',
-    'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    // вечный кэш — только для файлов сборки с хэшем в имени; звуки и модели могут обновляться
+    'cache-control': ext === '.html' ? 'no-cache' : p.replace(/\\/g, '/').startsWith('assets/') ? 'public, max-age=31536000, immutable' : 'public, max-age=3600',
     'content-security-policy': CSP,
     'x-content-type-options': 'nosniff',
     'referrer-policy': 'no-referrer',
@@ -134,6 +183,7 @@ const server = createServer(async (req, res) => {
     }
     if (!path.startsWith('/api/')) return serveStatic(req, res);
     if (req.method === 'GET' && path === '/api/status') return json(res, 200, { ...room.status(), accounts: accounts.count });
+    if (req.method === 'GET' && path === '/api/news') return json(res, 200, { version: VERSION, news: NEWS });
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT') return json(res, 405, { error: 'method' });
     const body = req.method === 'GET' ? {} : await readBody(req);
 
@@ -153,7 +203,7 @@ const server = createServer(async (req, res) => {
       return json(res, 200, r);
     }
     if (path === '/api/admin' && req.method === 'POST') {
-      if (!ADMIN_SECRET || body.secret !== ADMIN_SECRET) return json(res, 403, { error: 'forbidden' });
+      if (!adminSecretOk(body.secret)) return json(res, 403, { error: 'forbidden' });
       if (body.cmd === 'ban') accounts.ban(String(body.login ?? ''), String(body.reason ?? ''), body.ip ? String(body.ip) : undefined);
       if (body.cmd === 'drain') {
         // после конца текущего матча процесс завершится, Docker перезапустит контейнер

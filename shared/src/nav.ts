@@ -1,14 +1,26 @@
-// Навигационная сетка для ботов: клетки 0,5 м, где можно стоять,
-// с запасом по ширине игрока. Поиск пути A* и выпрямление пути.
+// Навигационная сетка для ботов: клетки 0,5 м в несколько уровней (земля, ступени, крыши).
+// В каждом столбце до LEVELS поверхностей, на которых можно стоять. Сосед доступен, если
+// перепад не больше одной ступени (0,5 м) — ровно столько поднимает физика (stepUp).
+// Поиск пути A* и выпрямление пути. Номер клетки: столбец + уровень × (w·h);
+// нижний уровень совпадает с номерами старой плоской сетки.
 
 import { VOXEL, VoxelMap } from './map';
+
+const LEVELS = 4;
+/** свободная высота над поверхностью: 4 вокселя = 2 м (игрок 1,8 м) */
+const CLEAR = 4;
+/** на сколько вокселей может быть ниже соседняя поверхность у края (уступ до 1 м — не обрыв) */
+const EDGE_DROP = 2;
 
 export class NavGrid {
   readonly w: number;
   readonly h: number;
-  /** 1 — проходимо с запасом */
+  /** клеток в одном уровне */
+  readonly n: number;
+  /** 1 — проходимо с запасом и достижимо */
   readonly walk: Uint8Array;
-  /** расстояние (в клетках) до ближайшей стены, для выбора укрытий */
+  /** высота ног в вокселях для каждой клетки, −1 — поверхности нет */
+  readonly fy: Int16Array;
   private gScore: Float32Array;
   private came: Int32Array;
   private closed: Uint8Array;
@@ -17,96 +29,243 @@ export class NavGrid {
   private heap: Int32Array;
   private fScore: Float32Array;
 
-  constructor(readonly map: VoxelMap) {
+  /**
+   * seeds — точки, откуда точно можно ходить (точки появления): клетки, недостижимые
+   * от них (крыши высоких домов, верх навесов и ящиков), исключаются из сетки.
+   */
+  constructor(
+    readonly map: VoxelMap,
+    seeds?: Array<[number, number]>,
+  ) {
     this.w = map.sx;
     this.h = map.sz;
-    const raw = new Uint8Array(this.w * this.h);
+    const n = (this.n = this.w * this.h);
+    const total = n * LEVELS;
+    this.fy = new Int16Array(total).fill(-1);
+    // поверхности: сплошной воксель снизу и CLEAR вокселей воздуха над ним
     for (let z = 0; z < this.h; z++)
       for (let x = 0; x < this.w; x++) {
-        let ok = map.get(x, 0, z) !== 0;
-        for (let y = 1; y <= 4 && ok; y++) if (map.get(x, y, z) !== 0) ok = false;
-        raw[x + z * this.w] = ok ? 1 : 0;
-      }
-    this.walk = new Uint8Array(this.w * this.h);
-    for (let z = 0; z < this.h; z++)
-      for (let x = 0; x < this.w; x++) {
-        let ok = raw[x + z * this.w] === 1;
-        for (let dz = -1; dz <= 1 && ok; dz++)
-          for (let dx = -1; dx <= 1 && ok; dx++) {
-            const xx = x + dx,
-              zz = z + dz;
-            if (xx < 0 || zz < 0 || xx >= this.w || zz >= this.h || raw[xx + zz * this.w] === 0) ok = false;
+        let k = 0;
+        for (let y = 1; y + CLEAR <= map.sy && k < LEVELS; y++) {
+          if (map.get(x, y - 1, z) === 0) continue;
+          let free = true;
+          for (let yy = y; yy < y + CLEAR && free; yy++) if (map.get(x, yy, z) !== 0) free = false;
+          if (free) {
+            this.fy[x + z * this.w + k * n] = y;
+            k++;
+            y += CLEAR - 1;
           }
-        this.walk[x + z * this.w] = ok ? 1 : 0;
+        }
       }
-    const n = this.w * this.h;
-    this.gScore = new Float32Array(n);
-    this.fScore = new Float32Array(n);
-    this.came = new Int32Array(n);
-    this.closed = new Uint8Array(n);
-    this.stamp = new Uint32Array(n);
-    this.heap = new Int32Array(n * 2);
+    // запас по ширине игрока: все 8 соседей — пол не выше ступени и не обрыв
+    const walk = new Uint8Array(total);
+    for (let k = 0; k < LEVELS; k++)
+      for (let z = 0; z < this.h; z++)
+        for (let x = 0; x < this.w; x++) {
+          const c = x + z * this.w + k * n;
+          const y = this.fy[c];
+          if (y < 0) continue;
+          let ok = true;
+          for (let dz = -1; dz <= 1 && ok; dz++)
+            for (let dx = -1; dx <= 1 && ok; dx++) {
+              if (!dx && !dz) continue;
+              const xx = x + dx,
+                zz = z + dz;
+              if (xx < 0 || zz < 0 || xx >= this.w || zz >= this.h || this.levelNear(xx + zz * this.w, y, EDGE_DROP, 1) < 0) ok = false;
+            }
+          walk[c] = ok ? 1 : 0;
+        }
+    this.walk = walk;
+    this.gScore = new Float32Array(total);
+    this.fScore = new Float32Array(total);
+    this.came = new Int32Array(total);
+    this.closed = new Uint8Array(total);
+    this.stamp = new Uint32Array(total);
+    this.heap = new Int32Array(total * 2);
+    if (seeds?.length) this.keepReachable(seeds);
   }
 
-  cellOf(wx: number, wz: number): number {
+  /** Уровень в столбце col с высотой в [y − down, y + up]; ближайший к y. −1 — нет. */
+  private levelNear(col: number, y: number, down: number, up: number): number {
+    let best = -1,
+      bd = Infinity;
+    for (let k = 0; k < LEVELS; k++) {
+      const c = col + k * this.n;
+      const fy = this.fy[c];
+      if (fy < 0) break;
+      if (fy < y - down || fy > y + up) continue;
+      const d = Math.abs(fy - y);
+      if (d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    return best;
+  }
+
+  /** Проходимый сосед в столбце col для перехода с высоты y (перепад не больше ступени). */
+  private stepTo(col: number, y: number): number {
+    for (let k = 0; k < LEVELS; k++) {
+      const c = col + k * this.n;
+      const fy = this.fy[c];
+      if (fy < 0) break;
+      if (Math.abs(fy - y) <= 1 && this.walk[c]) return c;
+    }
+    return -1;
+  }
+
+  /** Оставить только клетки, достижимые от seeds (обход в ширину). */
+  private keepReachable(seeds: Array<[number, number]>) {
+    const reach = new Uint8Array(this.walk.length);
+    const queue = new Int32Array(this.walk.length);
+    let qh = 0,
+      qt = 0;
+    for (const [sx, sz] of seeds) {
+      // точки появления — на полу (над ними может быть арка или навес)
+      const c = this.nearestWalkable(sx, sz, VOXEL);
+      if (c >= 0 && !reach[c]) {
+        reach[c] = 1;
+        queue[qt++] = c;
+      }
+    }
+    const w = this.w;
+    while (qh < qt) {
+      const cur = queue[qh++];
+      const col = cur % this.n;
+      const cx = col % w,
+        cz = Math.floor(col / w);
+      const y = this.fy[cur];
+      for (let dz = -1; dz <= 1; dz++)
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dz) continue;
+          const nx = cx + dx,
+            nz = cz + dz;
+          if (nx < 0 || nz < 0 || nx >= w || nz >= this.h) continue;
+          const nc = this.stepTo(nx + nz * w, y);
+          if (nc < 0 || reach[nc]) continue;
+          reach[nc] = 1;
+          queue[qt++] = nc;
+        }
+    }
+    for (let i = 0; i < this.walk.length; i++) if (!reach[i]) this.walk[i] = 0;
+  }
+
+  /**
+   * Клетка под точкой. wy — высота ног: выбирается поверхность, ближайшая по высоте;
+   * без wy — нижняя проходимая (земля).
+   */
+  cellOf(wx: number, wz: number, wy?: number): number {
     const x = Math.floor(wx / VOXEL),
       z = Math.floor(wz / VOXEL);
     if (x < 0 || z < 0 || x >= this.w || z >= this.h) return -1;
-    return x + z * this.w;
+    const col = x + z * this.w;
+    if (wy === undefined) {
+      for (let k = 0; k < LEVELS; k++) {
+        const c = col + k * this.n;
+        if (this.fy[c] < 0) break;
+        if (this.walk[c]) return c;
+      }
+      return col;
+    }
+    const y = Math.round(wy / VOXEL);
+    let best = col,
+      bd = Infinity;
+    for (let k = 0; k < LEVELS; k++) {
+      const c = col + k * this.n;
+      if (this.fy[c] < 0) break;
+      const d = Math.abs(this.fy[c] - y);
+      if (d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    return best;
   }
 
   isWalk(cell: number): boolean {
     return cell >= 0 && this.walk[cell] === 1;
   }
 
-  /** Ближайшая проходимая клетка (поиск по спирали). */
-  nearestWalkable(wx: number, wz: number): number {
+  /** Ближайшая проходимая клетка (поиск по спирали); с wy — предпочтительно на той же высоте. */
+  nearestWalkable(wx: number, wz: number, wy?: number): number {
     const cx = Math.floor(wx / VOXEL),
       cz = Math.floor(wz / VOXEL);
-    for (let r = 0; r < 12; r++)
+    const y = wy === undefined ? -1 : Math.round(wy / VOXEL);
+    for (let r = 0; r < 12; r++) {
+      let best = -1,
+        bd = Infinity;
       for (let dz = -r; dz <= r; dz++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
           const x = cx + dx,
             z = cz + dz;
           if (x < 0 || z < 0 || x >= this.w || z >= this.h) continue;
-          if (this.walk[x + z * this.w]) return x + z * this.w;
+          for (let k = 0; k < LEVELS; k++) {
+            const c = x + z * this.w + k * this.n;
+            if (this.fy[c] < 0) break;
+            if (!this.walk[c]) continue;
+            const d = y < 0 ? k : Math.abs(this.fy[c] - y);
+            if (d < bd) {
+              bd = d;
+              best = c;
+            }
+          }
         }
+      if (best >= 0 && (y < 0 || bd <= 2 || r >= 6)) return best;
+    }
     return -1;
   }
 
   cellCenter(cell: number): [number, number] {
-    return [((cell % this.w) + 0.5) * VOXEL, (Math.floor(cell / this.w) + 0.5) * VOXEL];
+    const col = cell % this.n;
+    return [((col % this.w) + 0.5) * VOXEL, (Math.floor(col / this.w) + 0.5) * VOXEL];
   }
 
-  /** Прямая между клетками проходима (проверка по шагам в полклетки). */
+  /** Высота ног в клетке, м. */
+  cellY(cell: number): number {
+    return this.fy[cell] * VOXEL;
+  }
+
+  /** Прямая между клетками проходима: по шагам в полклетки, без скачков высоты больше ступени. */
   straight(a: number, b: number): boolean {
     const [ax, az] = this.cellCenter(a);
     const [bx, bz] = this.cellCenter(b);
     const d = Math.hypot(bx - ax, bz - az);
     const steps = Math.ceil(d / (VOXEL * 0.5));
+    let y = this.fy[a];
     for (let i = 1; i < steps; i++) {
       const t = i / steps;
-      if (!this.isWalk(this.cellOf(ax + (bx - ax) * t, az + (bz - az) * t))) return false;
+      const x = Math.floor((ax + (bx - ax) * t) / VOXEL),
+        z = Math.floor((az + (bz - az) * t) / VOXEL);
+      if (x < 0 || z < 0 || x >= this.w || z >= this.h) return false;
+      const c = this.stepTo(x + z * this.w, y);
+      if (c < 0) return false;
+      y = this.fy[c];
     }
-    return true;
+    return Math.abs(y - this.fy[b]) <= 1;
   }
 
-  /** A* по 8 соседям. Возвращает выпрямленный путь (мировые точки) или null. */
-  findPath(sx: number, sz: number, tx: number, tz: number): Array<[number, number]> | null {
-    let start = this.cellOf(sx, sz);
-    if (!this.isWalk(start)) start = this.nearestWalkable(sx, sz);
-    let goal = this.cellOf(tx, tz);
-    if (!this.isWalk(goal)) goal = this.nearestWalkable(tx, tz);
+  /**
+   * A* по 8 соседям с учётом уровней. sy, ty — высота ног начала и цели (м);
+   * без них — нижний уровень. Возвращает выпрямленный путь (точки x, z) или null.
+   */
+  findPath(sx: number, sz: number, tx: number, tz: number, sy?: number, ty?: number): Array<[number, number]> | null {
+    let start = this.cellOf(sx, sz, sy);
+    if (!this.isWalk(start)) start = this.nearestWalkable(sx, sz, sy);
+    let goal = this.cellOf(tx, tz, ty);
+    if (!this.isWalk(goal)) goal = this.nearestWalkable(tx, tz, ty);
     if (start < 0 || goal < 0) return null;
     if (start === goal) return [this.cellCenter(goal)];
-    const w = this.w;
+    const w = this.w,
+      n = this.n;
     const st = ++this.curStamp;
-    const gx = goal % w,
-      gz = Math.floor(goal / w);
+    const gcol = goal % n;
+    const gx = gcol % w,
+      gz = Math.floor(gcol / w);
     const hfn = (c: number) => {
-      const dx = Math.abs((c % w) - gx),
-        dz = Math.abs(Math.floor(c / w) - gz);
+      const col = c % n;
+      const dx = Math.abs((col % w) - gx),
+        dz = Math.abs(Math.floor(col / w) - gz);
       return Math.max(dx, dz) + 0.414 * Math.min(dx, dz);
     };
     const heap = this.heap;
@@ -148,23 +307,26 @@ export class NavGrid {
     this.fScore[start] = hfn(start);
     push(start);
     let iter = 0;
-    while (hn > 0 && iter++ < 20000) {
+    while (hn > 0 && iter++ < 30000) {
       const cur = pop();
       if (cur === goal) break;
       if (this.closed[cur] && this.stamp[cur] === st) continue;
       this.closed[cur] = 1;
-      const cx = cur % w,
-        cz = Math.floor(cur / w);
+      const col = cur % n;
+      const cx = col % w,
+        cz = Math.floor(col / w);
+      const y = this.fy[cur];
       for (let dz = -1; dz <= 1; dz++)
         for (let dx = -1; dx <= 1; dx++) {
           if (!dx && !dz) continue;
           const nx = cx + dx,
             nz = cz + dz;
           if (nx < 0 || nz < 0 || nx >= w || nz >= this.h) continue;
-          const nc = nx + nz * w;
-          if (!this.walk[nc]) continue;
-          if (dx && dz && (!this.walk[cx + dx + cz * w] || !this.walk[cx + (cz + dz) * w])) continue;
-          const g = this.gScore[cur] + (dx && dz ? 1.414 : 1);
+          const nc = this.stepTo(nx + nz * w, y);
+          if (nc < 0) continue;
+          // по диагонали — только если оба боковых прохода открыты на той же высоте
+          if (dx && dz && (this.stepTo(cx + dx + cz * w, y) < 0 || this.stepTo(cx + (cz + dz) * w, y) < 0)) continue;
+          const g = this.gScore[cur] + (dx && dz ? 1.414 : 1) + (this.fy[nc] !== y ? 0.5 : 0);
           if (this.stamp[nc] !== st) {
             this.stamp[nc] = st;
             this.closed[nc] = 0;
@@ -199,39 +361,79 @@ export class NavGrid {
     return out;
   }
 
-  /** Точка с укрытием: проходимая, рядом много непроходимых клеток (стены, ящики). */
-  coverIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number] | null {
-    let best: [number, number] | null = null;
+  /** Укрытие рядом: сколько соседних столбцов закрыто стеной на высоте корпуса. */
+  private coverScore(c: number): number {
+    const col = c % this.n;
+    const cx = col % this.w,
+      cz = Math.floor(col / this.w);
+    const y = this.fy[c];
+    let score = 0;
+    for (let dz = -3; dz <= 3; dz++)
+      for (let dx = -3; dx <= 3; dx++) {
+        const x = cx + dx,
+          z = cz + dz;
+        if (this.map.get(x, y + 1, z) !== 0 || this.map.get(x, y + 2, z) !== 0) score++;
+      }
+    return score;
+  }
+
+  /** Точка с укрытием: проходимая, рядом стены или ящики на высоте корпуса. */
+  coverIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number, number] | null {
+    let best: [number, number, number] | null = null;
     let bestScore = -1;
     for (let i = 0; i < 40; i++) {
-      const p = this.randomIn(x0, z0, x1, z1, rnd);
-      if (!p) continue;
-      const cx = Math.floor(p[0] / VOXEL),
-        cz = Math.floor(p[1] / VOXEL);
-      let score = 0;
-      for (let dz = -3; dz <= 3; dz++)
-        for (let dx = -3; dx <= 3; dx++) {
-          const x = cx + dx,
-            z = cz + dz;
-          if (x < 0 || z < 0 || x >= this.w || z >= this.h || !this.walk[x + z * this.w]) score++;
-        }
-      score += rnd() * 4; // не всегда одна и та же позиция
+      const c = this.randomCell(x0, z0, x1, z1, rnd, false);
+      if (c < 0) continue;
+      const score = this.coverScore(c) + rnd() * 4; // не всегда одна и та же позиция
       if (score > bestScore) {
         bestScore = score;
-        best = p;
+        const [x, z] = this.cellCenter(c);
+        best = [x, z, this.cellY(c)];
       }
     }
     return best;
   }
 
-  /** Случайная проходимая точка внутри прямоугольника. */
-  randomIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number] | null {
+  private randomCell(x0: number, z0: number, x1: number, z1: number, rnd: () => number, high: boolean): number {
     for (let i = 0; i < 60; i++) {
-      const x = x0 + (x1 - x0) * rnd(),
-        z = z0 + (z1 - z0) * rnd();
-      const c = this.cellOf(x, z);
-      if (this.isWalk(c)) return this.cellCenter(c);
+      const x = Math.floor((x0 + (x1 - x0) * rnd()) / VOXEL),
+        z = Math.floor((z0 + (z1 - z0) * rnd()) / VOXEL);
+      if (x < 0 || z < 0 || x >= this.w || z >= this.h) continue;
+      const col = x + z * this.w;
+      // сначала нижний уровень (как раньше), второй ярус — только по запросу high
+      for (let k = 0; k < LEVELS; k++) {
+        const c = col + k * this.n;
+        if (this.fy[c] < 0) break;
+        if (!this.walk[c]) continue;
+        if (high ? this.fy[c] >= HIGH : this.fy[c] < HIGH) return c;
+      }
     }
-    return null;
+    return -1;
+  }
+
+  /** Случайная проходимая точка внутри прямоугольника на нижнем уровне: [x, z, высота ног]. */
+  randomIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number, number] | null {
+    const c = this.randomCell(x0, z0, x1, z1, rnd, false);
+    if (c < 0) return null;
+    const [x, z] = this.cellCenter(c);
+    return [x, z, this.cellY(c)];
+  }
+
+  /** Случайная точка второго яруса (крыша, площадка) внутри прямоугольника или null. */
+  highIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number, number] | null {
+    const c = this.randomCell(x0, z0, x1, z1, rnd, true);
+    if (c < 0) return null;
+    const [x, z] = this.cellCenter(c);
+    return [x, z, this.cellY(c)];
+  }
+
+  /** Сколько проходимых клеток второго яруса на карте. */
+  highCount(): number {
+    let k = 0;
+    for (let i = 0; i < this.walk.length; i++) if (this.walk[i] && this.fy[i] >= HIGH) k++;
+    return k;
   }
 }
+
+/** Второй ярус: ноги выше 2 м над полом (пол — 1 воксель, ступень на ящик в 1 м не считается). */
+const HIGH = 1 + 4;

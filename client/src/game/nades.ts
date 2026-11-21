@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { DT, SMOKE_RADIUS, WEAPONS, stepNade, type NadeState, type VoxelMap } from '../../../shared/src/index';
 import { buildGun } from './viewmodel';
+import { disposeGun } from './weaponModels';
 
 const NADE_COLORS = [0x4f6b32, 0x9aa0a6, 0xd9d9d4];
 
@@ -155,7 +156,7 @@ export class DropsView {
     for (const [id, g] of this.items) {
       if (seen.has(id)) continue;
       this.group.remove(g);
-      g.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+      disposeGun(g);
       this.items.delete(id);
     }
   }

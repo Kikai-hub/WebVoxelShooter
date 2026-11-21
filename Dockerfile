@@ -13,14 +13,20 @@ COPY tools ./tools
 RUN npm run typecheck && npm run build
 
 FROM node:22-slim AS game
+# версия сборки (коммит и дата) — показывается в меню; передаёт deploy/update.sh
+ARG GIT_COMMIT=dev
+ARG GIT_DATE=
 ENV NODE_ENV=production \
     GAME_PORT=8080 \
     DATA_DIR=/app/data \
-    STATIC_DIR=/app/dist/client
+    STATIC_DIR=/app/dist/client \
+    GIT_COMMIT=$GIT_COMMIT \
+    GIT_DATE=$GIT_DATE
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY news.json ./news.json
 RUN mkdir -p /app/data && chown -R node:node /app/data
 USER node
 EXPOSE 8080

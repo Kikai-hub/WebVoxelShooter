@@ -2,7 +2,7 @@
 // Фон — заранее отрендеренный кадр карты с CSS-размытием (без живого рендера сцены).
 
 import * as THREE from 'three';
-import { MAPS, computePose, POSE_SIZE } from '../../../shared/src/index';
+import { MAPS, computePose, newPoseAnim, POSE_SIZE, WEAPONS } from '../../../shared/src/index';
 import { buildMapMeshes } from '../game/mapMesh';
 import { VoxelBody } from '../game/voxelBody';
 
@@ -82,10 +82,14 @@ export class AgentView {
     requestAnimationFrame(this.frame);
   }
 
-  setAgent(team: number, agent: number, skin: number, weaponKind = 'rifle') {
+  /** weapon — ключ оружия (vikhr, osa…); по умолчанию винтовка. */
+  setAgent(team: number, agent: number, skin: number, weapon = 'vikhr') {
     this.body?.dispose();
     this.body = new VoxelBody(team, agent, skin, this.mat);
-    this.body.setWeapon(weaponKind);
+    const def = WEAPONS.find((w) => w.key === weapon) ?? WEAPONS.find((w) => w.key === 'vikhr')!;
+    this.weaponKind = def.kind;
+    this.weaponKey = def.key;
+    this.body.setWeapon(def.kind, def.key);
     this.scene.add(this.body.group);
   }
 
@@ -110,16 +114,55 @@ export class AgentView {
       this.poseTimer = 4 + Math.random() * 3;
       this.poseKind = (this.poseKind + 1) % 3;
     }
-    if (this.body) {
-      // дыхание и смена позы: оружие вниз, к плечу, осмотр
-      const breathe = Math.sin(this.t * 1.6) * 0.015;
-      const pitch = this.poseKind === 0 ? -0.55 : this.poseKind === 1 ? -0.1 + breathe : -0.35;
-      const yaw = Math.PI + 0.35 + this.dragYaw + (this.poseKind === 2 ? Math.sin(this.t * 0.8) * 0.25 : 0);
-      computePose(0, breathe, 0, yaw, pitch, false, this.pose);
-      this.body.applyPose(this.pose);
-    }
+    if (this.body) this.animateIdle(dt);
     this.renderer.render(this.scene, this.camera);
   };
+
+  // Спокойная анимация в меню: дыхание, перенос веса с ноги на ногу и три позы,
+  // между которыми агент плавно переходит: оружие опущено, к плечу, осмотр по сторонам.
+  private anim = newPoseAnim();
+  private weaponKind = 'rifle';
+  private weaponKey = 'vikhr';
+  private cur = { pitch: -0.55, legL: 0, legR: 0, kneeL: 0, kneeR: 0, armL: 0, lean: 0, look: 0 };
+
+  private animateIdle(dt: number) {
+    const k = this.poseKind;
+    const t = this.t;
+    // перенос веса: опорная нога прямая, другая чуть согнута и выставлена
+    const shift = Math.sin(t * 0.35) > 0 ? 1 : -1;
+    const target = {
+      pitch: k === 0 ? -0.6 : k === 1 ? -0.08 : -0.38,
+      legL: shift > 0 ? 0.1 : -0.02,
+      legR: shift > 0 ? -0.02 : 0.1,
+      kneeL: shift > 0 ? 0.28 : 0.04,
+      kneeR: shift > 0 ? 0.04 : 0.28,
+      armL: 0,
+      lean: k === 1 ? -0.05 : 0.02,
+      // осмотр: голова смотрит по сторонам, раз в несколько секунд в другую
+      look: k === 2 ? Math.sin(t * 0.9) * 0.55 : Math.sin(t * 0.23) * 0.12,
+    };
+    const c = this.cur;
+    const r = 1 - Math.exp(-dt * 3);
+    for (const key of Object.keys(c) as Array<keyof typeof c>) c[key] += (target[key] - c[key]) * r;
+    const breathe = Math.sin(t * 1.6);
+    const a = this.anim;
+    a.crouch = 0;
+    a.legL = c.legL;
+    a.legR = c.legR;
+    a.kneeL = c.kneeL;
+    a.kneeR = c.kneeR;
+    // согнутое колено опускает таз, дыхание поднимает плечи
+    a.bob = -0.02 * Math.max(c.kneeL, c.kneeR) + breathe * 0.006;
+    a.lean = c.lean + breathe * 0.012;
+    a.armPitch = breathe * 0.02;
+    a.reload = c.armL;
+    a.weapon = this.weaponKind;
+    a.headYaw = c.look;
+    const yaw = Math.PI + 0.35 + this.dragYaw;
+    computePose(0, 0, 0, yaw, c.pitch, false, this.pose, a);
+    this.body!.setWeapon(this.weaponKind, this.weaponKey); // модель могла догрузиться
+    this.body!.applyPose(this.pose, a);
+  }
 
   dispose() {
     this.running = false;

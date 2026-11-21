@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { computePose, POSE_SIZE, RUN_SPEED, CROUCH_SPEED } from '../../shared/src/index';
 import { AgentAnimator } from './game/animator';
 import { VoxelBody } from './game/voxelBody';
-import { loadGunModels } from './game/weaponModels';
+import { applyFore, loadGunModels } from './game/weaponModels';
 
 loadGunModels();
 /** вид оружия → ключ модели */
@@ -204,6 +204,7 @@ function frame() {
     }
     if (dt > 0) {
       const an = a.anim.update(dt, { x, y: m.y, z, yaw: m.yaw, crouch: m.crouch, onGround: m.onGround, reloading: m.reloading, weaponKind: a.weapon });
+      applyFore(an, KEY_OF[a.weapon]);
       computePose(x, m.y, z, m.yaw, m.pitch, m.crouch, a.pose, an);
       a.body.setWeapon(a.weapon, KEY_OF[a.weapon]);
       a.body.applyPose(a.pose, an);

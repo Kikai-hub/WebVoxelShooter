@@ -110,4 +110,10 @@ export const HE_MAX_DAMAGE = 98;
 export const FLASH_RANGE = 25;
 export const SMOKE_RADIUS = 3.2;
 export const SMOKE_TIME = 15;
+/** Зажигательная: разбивается о землю (или через FIRE_FUSE в воздухе), огонь радиусом FIRE_RADIUS */
+export const FIRE_FUSE = 2;
+export const FIRE_RADIUS = 3;
+export const FIRE_TIME = 7;
+/** урон огнём в секунду (броня не защищает), начисляется каждые 0,25 с */
+export const FIRE_DPS = 40;
 export const MAX_DROPS = 24;

@@ -90,6 +90,9 @@ export interface PoseAnim {
   headYaw: number;
   /** вид оружия в руках: от него зависит хват */
   weapon: string;
+  /** цевьё конкретной модели относительно рукояти: вперёд вдоль ствола и вверх, м (0 — по виду оружия) */
+  foreD: number;
+  foreUp: number;
   // ---- выход computePose (заполняется им) ----
   /** сгиб локтей; применяет VoxelBody */
   elbowL: number;
@@ -99,7 +102,7 @@ export interface PoseAnim {
 }
 
 export function newPoseAnim(): PoseAnim {
-  return { crouch: 0, legL: 0, legR: 0, kneeL: 0, kneeR: 0, bob: 0, lean: 0, armPitch: 0, reload: 0, headYaw: 0, weapon: 'rifle', elbowL: 0, elbowR: 0, gun: new Float32Array(POSE_STRIDE) };
+  return { crouch: 0, legL: 0, legR: 0, kneeL: 0, kneeR: 0, bob: 0, lean: 0, armPitch: 0, reload: 0, headYaw: 0, weapon: 'rifle', foreD: 0, foreUp: 0, elbowL: 0, elbowR: 0, gun: new Float32Array(POSE_STRIDE) };
 }
 
 /** Число вокселей предплечья и голени (ниже локтя и колена). */
@@ -230,7 +233,9 @@ function computeAnimatedPose(x: number, y: number, z: number, yaw: number, pitch
   const grip = rot(g.grip);
   writePart(an.gun, 0, lx(grip[0], grip[2]), grip[1], lz(grip[0], grip[2]), yaw, gp, 1);
   // левая кисть: на цевье / рукояти, при перезарядке — к магазину
-  const lHold = g.leftFree ? ([g.left[0], shY + g.left[1], topZ + g.left[2]] as [number, number, number]) : rot(g.left);
+  // у длинного оружия левая кисть — на цевье конкретной модели, если оно известно
+  const left0: readonly [number, number, number] = an.foreD > 0 && !g.leftFree && g.follow > 0.8 && an.weapon !== 'pistol' ? [g.grip[0] - 0.01, g.grip[1] + an.foreUp - 0.02, g.grip[2] - an.foreD] : g.left;
+  const lHold = g.leftFree ? ([g.left[0], shY + g.left[1], topZ + g.left[2]] as [number, number, number]) : rot(left0);
   const lMag = rot(g.mag, 0.5);
   const r = an.reload;
   const left: [number, number, number] = [lHold[0] + (lMag[0] - lHold[0]) * r, lHold[1] + (lMag[1] - lHold[1]) * r, lHold[2] + (lMag[2] - lHold[2]) * r];

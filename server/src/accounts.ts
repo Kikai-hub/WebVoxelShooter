@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DEFAULT_LOADOUT, type Loadout } from './room';
-import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS } from '../../shared/src/index';
+import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS, defaultBinds, sanitizeBinds, type Binds } from '../../shared/src/index';
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
 const SCRYPT_OPTS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -19,9 +19,34 @@ export interface Settings {
   tracerBright: number;
   blood: 'blood' | 'confetti';
   volume: number;
+  /** управление: действие → до двух клавиш */
+  binds: Binds;
 }
 
-export const DEFAULT_SETTINGS: Settings = { sens: 1, fov: 90, tracers: true, tracerBright: 1, blood: 'blood', volume: 0.7 };
+export const DEFAULT_SETTINGS: Settings = { sens: 1, fov: 90, tracers: true, tracerBright: 1, blood: 'blood', volume: 0.7, binds: defaultBinds() };
+
+/** Статистика игрока за всё время (только живые игроки, боты не считаются). */
+export interface PlayerStats {
+  kills: number;
+  deaths: number;
+  headshots: number;
+  damage: number;
+  shots: number;
+  hits: number;
+  mvps: number;
+  rounds: number;
+  roundsWon: number;
+  matches: number;
+  matchesWon: number;
+  playSeconds: number;
+  /** убийства по ключу оружия — для «любимого оружия» */
+  weapons: Record<string, number>;
+}
+export type StatDelta = Partial<Omit<PlayerStats, 'weapons'>> & { weapon?: string };
+
+export function emptyStats(): PlayerStats {
+  return { kills: 0, deaths: 0, headshots: 0, damage: 0, shots: 0, hits: 0, mvps: 0, rounds: 0, roundsWon: 0, matches: 0, matchesWon: 0, playSeconds: 0, weapons: {} };
+}
 
 export interface Account {
   id: string;
@@ -34,6 +59,7 @@ export interface Account {
   loadout: Loadout;
   settings: Settings;
   banned?: string;
+  stats?: PlayerStats;
 }
 
 interface Session {
@@ -266,6 +292,19 @@ export class AccountStore {
     this.save();
   }
 
+  /** Добавить к статистике аккаунта. Время в игре идёт каждую секунду — его сохраняем вместе с остальным. */
+  addStats(accountId: string, d: StatDelta) {
+    const acc = this.byId.get(accountId);
+    if (!acc) return;
+    const s = (acc.stats ??= emptyStats());
+    for (const [k, v] of Object.entries(d)) {
+      if (k === 'weapon' || typeof v !== 'number' || !Number.isFinite(v)) continue;
+      (s as unknown as Record<string, number>)[k] = ((s as unknown as Record<string, number>)[k] ?? 0) + v;
+    }
+    if (d.weapon) s.weapons[d.weapon] = (s.weapons[d.weapon] ?? 0) + 1;
+    if (Object.keys(d).some((k) => k !== 'playSeconds')) this.save();
+  }
+
   setSettings(acc: Account, s: unknown) {
     acc.settings = sanitizeSettings(s);
     this.save();
@@ -311,6 +350,7 @@ export function sanitizeSettings(s: unknown): Settings {
     tracerBright: num(o.tracerBright, 0, 2, 1),
     blood: o.blood === 'confetti' ? 'confetti' : 'blood',
     volume: num(o.volume, 0, 1, DEFAULT_SETTINGS.volume),
+    binds: sanitizeBinds(o.binds),
   };
 }
 

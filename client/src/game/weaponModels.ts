@@ -27,6 +27,18 @@ const DEFS: Record<string, GunModelDef> = {
   molot: { file: 'Shotgun_01', muzzle: '+x', length: 0.85, grip: [0.29, 0.58], fore: [0.69, 0.67], bore: 0.85 },
   vikhr: { file: 'AssaultRifle_01', length: 0.8, grip: [0.29, 0.47], fore: [0.65, 0.74], bore: 0.84 },
   sokol: { file: 'SniperRifle_01', length: 0.95, grip: [0.29, 0.38], fore: [0.65, 0.62], bore: 0.65 },
+  // остальное оружие пака (у части моделей дуло в исходнике смотрит назад — muzzle '+z')
+  m4a1: { file: 'AssaultRifle_02', length: 0.8, grip: [0.36, 0.36], fore: [0.66, 0.62], bore: 0.72 },
+  // буллпап: рукоять далеко от затыльника; берём ближе к прикладу, чтобы он не уходил сквозь плечо
+  aug: { file: 'AssaultRifle_03', muzzle: '+z', length: 0.7, grip: [0.4, 0.41], fore: [0.8, 0.66], bore: 0.77 },
+  awm: { file: 'SniperRifle_02', length: 1.05, grip: [0.27, 0.36], fore: [0.6, 0.45], bore: 0.55 },
+  mac10: { file: 'SubmachineGun_01', muzzle: '+z', length: 0.3, grip: [0.33, 0.42], fore: [0.8, 0.56], bore: 0.9 },
+  ump: { file: 'SubmachineGun_04', muzzle: '+z', length: 0.6, grip: [0.38, 0.31], fore: [0.78, 0.64], bore: 0.75 },
+  skorpion: { file: 'SubmachineGun_05', length: 0.45, grip: [0.14, 0.39], fore: [0.55, 0.6], bore: 0.88 },
+  sawedoff: { file: 'Shotgun_03', length: 0.6, grip: [0.14, 0.37], fore: [0.61, 0.73], bore: 0.9 },
+  beretta: { file: 'Pistol_01', muzzle: '+z', length: 0.22, grip: [0.19, 0.34], bore: 0.84 },
+  python: { file: 'Revolver_01', muzzle: '+z', length: 0.24, grip: [0.19, 0.37], bore: 0.88 },
+  sw29: { file: 'Revolver_02', muzzle: '+z', length: 0.3, grip: [0.11, 0.29], bore: 0.92 },
 };
 
 export interface GunModel {
@@ -77,6 +89,13 @@ export function onGunModel(cb: () => void) {
 
 export function gunModel(key: string): GunModel | null {
   return models.get(key) ?? null;
+}
+
+/** Передать позе агента цевьё модели (куда тянется левая рука); без модели — по виду оружия. */
+export function applyFore(an: { foreD: number; foreUp: number }, key: string | undefined) {
+  const m = key ? models.get(key) : null;
+  an.foreD = m?.fore ? -m.fore.z : 0;
+  an.foreUp = m?.fore ? m.fore.y : 0;
 }
 
 /** Копия модели с раскраской (tint умножает цвет, слегка). Геометрия общая. */

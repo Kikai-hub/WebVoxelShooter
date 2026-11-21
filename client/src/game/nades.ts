@@ -5,7 +5,90 @@ import { DT, SMOKE_RADIUS, WEAPONS, stepNade, type NadeState, type VoxelMap } fr
 import { buildGun } from './viewmodel';
 import { disposeGun } from './weaponModels';
 
-const NADE_COLORS = [0x4f6b32, 0x9aa0a6, 0xd9d9d4];
+const NADE_COLORS = [0x4f6b32, 0x9aa0a6, 0xd9d9d4, 0x8a5a24];
+
+const FLAMES = 200;
+const MAX_FIRES = 4;
+const FLAME_COLORS = [0xffe27a, 0xffb43a, 0xff7a1a, 0xe8461a, 0x3a2a22];
+
+/**
+ * Огонь зажигательной: кубики пламени по кругу радиусом r на полу, каждый поднимается,
+ * мерцает и рождается заново; к концу горения огонь опадает. Без источников света
+ * (смена их числа перекомпилирует шейдеры — рывок посреди боя).
+ */
+export class FireView {
+  readonly mesh: THREE.InstancedMesh;
+  private fires: Array<{ id: number; x: number; y: number; z: number; r: number; start: number; end: number; off: Float32Array; phase: Float32Array } | null> = [];
+  private m4 = new THREE.Matrix4();
+  private zero = new THREE.Matrix4().makeScale(0, 0, 0);
+  private col = new THREE.Color();
+
+  constructor() {
+    this.mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.18, 0.18, 0.18), new THREE.MeshBasicMaterial({ toneMapped: false }), FLAMES * MAX_FIRES);
+    this.mesh.frustumCulled = false;
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (let i = 0; i < FLAMES * MAX_FIRES; i++) {
+      this.mesh.setMatrixAt(i, this.zero);
+      this.mesh.setColorAt(i, this.col.set(FLAME_COLORS[i % FLAME_COLORS.length]));
+    }
+    for (let i = 0; i < MAX_FIRES; i++) this.fires.push(null);
+  }
+
+  /** left — сколько секунд гореть (для поздно вошедших — остаток). */
+  add(id: number, x: number, y: number, z: number, r: number, left: number, total: number, now: number) {
+    let slot = this.fires.findIndex((f) => !f);
+    if (slot < 0) slot = this.fires.reduce((best, f, i) => (f && f.end < (this.fires[best]?.end ?? Infinity) ? i : best), 0);
+    const off = new Float32Array(FLAMES * 2);
+    const phase = new Float32Array(FLAMES);
+    for (let i = 0; i < FLAMES; i++) {
+      // равномерно по кругу, чуть гуще к центру
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.pow(Math.random(), 0.7) * r;
+      off[i * 2] = Math.cos(a) * d;
+      off[i * 2 + 1] = Math.sin(a) * d;
+      phase[i] = Math.random();
+    }
+    this.fires[slot] = { id, x, y, z, r, start: now - (total - left), end: now + left, off, phase };
+  }
+
+  remove(id: number) {
+    const i = this.fires.findIndex((f) => f?.id === id);
+    if (i < 0) return;
+    for (let k = 0; k < FLAMES; k++) this.mesh.setMatrixAt(i * FLAMES + k, this.zero);
+    this.mesh.instanceMatrix.needsUpdate = true;
+    this.fires[i] = null;
+  }
+
+  clear() {
+    for (const f of this.fires) if (f) this.remove(f.id);
+  }
+
+  update(now: number) {
+    let dirty = false;
+    for (let s = 0; s < MAX_FIRES; s++) {
+      const f = this.fires[s];
+      if (!f) continue;
+      dirty = true;
+      if (now > f.end) {
+        this.remove(f.id);
+        continue;
+      }
+      const grow = Math.min(1, (now - f.start) / 0.4);
+      const fade = Math.min(1, (f.end - now) / 1.2);
+      const base = s * FLAMES;
+      for (let i = 0; i < FLAMES; i++) {
+        // жизнь кубика: 0,6 с подъёма, затем снова снизу
+        const life = (now * 1.7 + f.phase[i]) % 1;
+        const rise = life * (0.5 + 0.9 * fade);
+        const sz = (1 - life) * (0.7 + 0.6 * Math.sin(now * 13 + i)) * grow * fade + 0.05;
+        this.m4.makeScale(sz * 1.4, sz * 2.2, sz * 1.4);
+        this.m4.setPosition(f.x + f.off[i * 2] * grow, f.y + 0.08 + rise, f.z + f.off[i * 2 + 1] * grow);
+        this.mesh.setMatrixAt(base + i, this.m4);
+      }
+    }
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
+  }
+}
 
 /** Гранаты в полёте: клиент считает тот же полёт, что и сервер, по событию броска. */
 export class NadeView {

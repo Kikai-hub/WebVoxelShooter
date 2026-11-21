@@ -1,14 +1,28 @@
 // Звуки (WebAudio). Выстрелы — записи настоящего оружия (public/sounds, по 3 варианта на ствол,
 // грузятся в фоне); пока не загрузились — синтезированный выстрел. Шаги, попадания, бомба — синтез.
 
-/** ключ оружия → файлы выстрелов и громкость относительно самого громкого (снайперка) */
-const SHOT_SOUNDS: Record<string, { n: number; gain: number }> = {
+/**
+ * Ключ оружия → файлы выстрелов (public/sounds/<file>_<i>.wav), громкость относительно самой громкой
+ * снайперки и высота тона. file — если оружие берёт записи другого ствола того же калибра.
+ */
+const SHOT_SOUNDS: Record<string, { n: number; gain: number; file?: string; rate?: number }> = {
   osa: { n: 3, gain: 0.5 },
   gyurza: { n: 3, gain: 0.65 },
   shmel: { n: 1, gain: 0.55 },
   molot: { n: 3, gain: 0.85 },
   vikhr: { n: 3, gain: 0.7 },
   sokol: { n: 3, gain: 1 },
+  m4a1: { n: 3, gain: 0.65 },
+  aug: { n: 3, gain: 0.66, rate: 0.97 },
+  awm: { n: 3, gain: 1 },
+  beretta: { n: 3, gain: 0.48 },
+  skorpion: { n: 3, gain: 0.45, rate: 1.08 },
+  python: { n: 3, gain: 0.62 },
+  sw29: { n: 3, gain: 0.72, rate: 0.94 },
+  sawedoff: { n: 3, gain: 0.85, rate: 1.04 },
+  // .45 ACP — те же записи, что у 1911 (Desert Eagle), со своей высотой
+  mac10: { n: 3, gain: 0.5, file: 'gyurza', rate: 1.12 },
+  ump: { n: 3, gain: 0.55, file: 'gyurza', rate: 0.96 },
 };
 
 export class Sfx {
@@ -23,8 +37,10 @@ export class Sfx {
 
   constructor() {
     // скачиваем заранее, пока игрок в меню; раскодируем, когда появится AudioContext
-    for (const [key, s] of Object.entries(SHOT_SOUNDS))
-      for (let i = 0; i < s.n; i++) {
+    // файлы общие у стволов одного калибра — грузим каждый набор один раз
+    const files = new Set(Object.entries(SHOT_SOUNDS).map(([k, s]) => s.file ?? k));
+    for (const key of files)
+      for (let i = 0; i < (SHOT_SOUNDS[key]?.n ?? 3); i++) {
         const name = `${key}_${i}`;
         fetch(`${import.meta.env.BASE_URL}sounds/${name}.wav`)
           .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
@@ -84,7 +100,7 @@ export class Sfx {
   shot(kind: string, dist = 0, pan = 0, key = '') {
     const ctx = this.ensure();
     if (!ctx || !this.noise) return;
-    const bufs = this.buffers.get(key);
+    const bufs = this.buffers.get(SHOT_SOUNDS[key]?.file ?? key);
     const conf = SHOT_SOUNDS[key];
     if (bufs?.length && conf) {
       let v = Math.floor(Math.random() * bufs.length);
@@ -93,7 +109,7 @@ export class Sfx {
       const t = ctx.currentTime;
       const src = ctx.createBufferSource();
       src.buffer = bufs[v];
-      src.playbackRate.value = 0.96 + Math.random() * 0.08;
+      src.playbackRate.value = (conf.rate ?? 1) * (0.96 + Math.random() * 0.08);
       // расстояние: громкость падает, высокие частоты гаснут быстрее
       const lp = ctx.createBiquadFilter();
       lp.type = 'lowpass';
@@ -199,6 +215,21 @@ export class Sfx {
     const v = Math.max(0.06, 0.8 / (1 + dist * 0.08));
     this.noiseBurst(0.35, 4000, v, 'highpass');
     this.click(3800, 0.9, v * 0.25);
+  }
+
+  /** Звон разбитой бутылки / хлопок зажигательной. */
+  glassBreak(dist: number) {
+    const v = Math.max(0.05, 0.6 / (1 + dist * 0.1));
+    this.noiseBurst(0.25, 5000, v, 'highpass');
+    this.click(2600, 0.12, v * 0.2);
+  }
+
+  /** Огонь: гул и треск на всё время горения, тише с расстоянием. */
+  fire(dist: number, dur: number) {
+    const v = Math.max(0.02, 0.35 / (1 + dist * 0.12));
+    this.noiseBurst(0.4, 1800, v * 1.4);
+    this.noiseBurst(dur, 700, v, 'lowpass');
+    this.noiseBurst(dur, 3200, v * 0.35, 'bandpass');
   }
 
   smoke(dist: number) {

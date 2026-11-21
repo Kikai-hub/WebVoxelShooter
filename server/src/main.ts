@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
 import { decodeCmds, DT, type ClientMsg } from '../../shared/src/index';
-import { AccountStore, type Account } from './accounts';
+import { AccountStore, emptyStats, type Account } from './accounts';
 import { preloadMaps, Room, type Conn } from './room';
 import { execFileSync } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
@@ -64,6 +64,7 @@ const accounts = new AccountStore(DATA_DIR);
 const START_MAPS = ['market', 'wasteland', 'quarter', 'caravan', 'medina'];
 preloadMaps();
 const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))), process.env.START_MAP ?? START_MAPS[Math.floor(Math.random() * START_MAPS.length)]);
+room.onStat = (id, d) => accounts.addStats(id, d);
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
 let nextTick = performance.now();
@@ -222,6 +223,7 @@ const server = createServer(async (req, res) => {
     const acc = accounts.byToken(token);
     if (!acc) return json(res, 401, { error: 'Нужно войти' });
     if (path === '/api/me' && req.method === 'GET') return json(res, 200, { account: publicAccount(acc) });
+    if (path === '/api/stats' && req.method === 'GET') return json(res, 200, { stats: acc.stats ?? emptyStats() });
     if (path === '/api/logout' && req.method === 'POST') {
       accounts.logout(token);
       return json(res, 200, { ok: true });
@@ -345,6 +347,9 @@ function onSocket(ws: WebSocket, ip: string) {
         break;
       case 'vote':
         if (typeof msg.map === 'string') room.vote(conn, msg.map);
+        break;
+      case 'team':
+        if (msg.team === 0 || msg.team === 1) room.switchTeam(conn, msg.team);
         break;
       case 'ping':
         ws.send(JSON.stringify({ t: 'pong', c: msg.c }));

@@ -1,4 +1,5 @@
 // HTTP API аккаунтов. Токен хранится в хранилище страницы (localStorage).
+import type { Binds } from '../../shared/src/index';
 
 export interface Loadout {
   primary: [string, string];
@@ -13,6 +14,23 @@ export interface Settings {
   tracerBright: number;
   blood: 'blood' | 'confetti';
   volume: number;
+  binds: Binds;
+}
+/** Статистика игрока за всё время (как на сервере, server/src/accounts.ts). */
+export interface PlayerStats {
+  kills: number;
+  deaths: number;
+  headshots: number;
+  damage: number;
+  shots: number;
+  hits: number;
+  mvps: number;
+  rounds: number;
+  roundsWon: number;
+  matches: number;
+  matchesWon: number;
+  playSeconds: number;
+  weapons: Record<string, number>;
 }
 export interface AccountInfo {
   login: string;
@@ -75,6 +93,7 @@ export const api = {
   deleteAccount: (password: string) => call('POST', 'delete', { password }),
   saveLoadout: (loadout: Loadout) => call<{ loadout: Loadout }>('PUT', 'loadout', { loadout }),
   saveSettings: (settings: Settings) => call<{ settings: Settings }>('PUT', 'settings', { settings }),
-  news: () => call<{ version: { commit: string; date: string }; news: Array<{ date: string; title: string; items: string[] }> }>('GET', 'news'),
+  stats: () => call<{ stats: PlayerStats }>('GET', 'stats'),
+  news: () =>call<{ version: { commit: string; date: string }; news: Array<{ date: string; title: string; items: string[] }> }>('GET', 'news'),
   status: () =>call<{ humans: number; bots: number; spectators: number; phase: string; round: number; score: [number, number]; map: string; mapId: string }>('GET', 'status'),
 };

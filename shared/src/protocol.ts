@@ -247,11 +247,13 @@ export type GameEvent =
   | { e: 'defuse' }
   | { e: 'explode'; p: [number, number, number] }
   | { e: 'roundStart'; rn: number }
-  | { e: 'roundEnd'; w: number; why: string }
+  | { e: 'roundEnd'; w: number; why: string; mvp?: number }
   | { e: 'matchEnd'; w: number }
   | { e: 'half' }
   | { e: 'nade'; id: number; s: number; type: number; tick: number; p: [number, number, number]; v: [number, number, number] }
   | { e: 'boom'; id: number; type: number; p: [number, number, number] }
+  | { e: 'fire'; id: number; p: [number, number, number]; r: number; dur: number }
+  | { e: 'fireOut'; id: number }
   | { e: 'flash'; v: number; dur: number }
   | { e: 'pickup'; s: number; w: number }
   | { e: 'chip'; c: number[] }
@@ -271,6 +273,8 @@ export interface FullState {
   wounds: Array<{ i: number; ops: number[] }>; // плоский массив p,x,y,z,r,x2
   tracers: boolean;
   smokes: Array<{ x: number; y: number; z: number; left: number }>;
+  /** огонь зажигательных: центр, радиус, сколько осталось гореть */
+  fires: Array<{ id: number; x: number; y: number; z: number; left: number }>;
   /** сколы стен за раунд: по 10 чисел на операцию */
   chips: number[];
 }
@@ -279,7 +283,7 @@ export type ServerMsg =
   | RoomState
   | FullState
   | { t: 'ev'; e: GameEvent[] }
-  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: [number, number, number]; kit: boolean }
+  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: number[]; kit: boolean }
   | { t: 'err'; msg: string }
   | { t: 'kick'; msg: string }
   | { t: 'pong'; c: number };
@@ -289,4 +293,5 @@ export type ClientMsg =
   | { t: 'buy'; item: string }
   | { t: 'chat'; text: string }
   | { t: 'ping'; c: number }
-  | { t: 'vote'; map: string };
+  | { t: 'vote'; map: string }
+  | { t: 'team'; team: number };

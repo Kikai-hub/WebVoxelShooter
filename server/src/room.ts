@@ -11,10 +11,20 @@ import {
   HE_RADIUS,
   MAX_DROPS,
   NADE_FUSE,
+  NADE_BUY,
   NADE_LIMIT,
   NADE_TYPES,
+  NADE_COUNT,
+  FIRE_DPS,
+  FIRE_FUSE,
+  FIRE_RADIUS,
+  FIRE_TIME,
+  SLOT_FIRE,
+  forTeam,
+  nadeWeapon,
   SLOT_HE,
   SMOKE_TIME,
+  SMOKE_RADIUS,
   PART_LEG_L,
   VOXEL,
   smokeBlocks,
@@ -117,6 +127,7 @@ import {
   type WeaponDef,
 } from '../../shared/src/index';
 import { Bot, BOT_NAMES } from './bot';
+import type { StatDelta } from './accounts';
 
 export interface Loadout {
   primary: [string, string];
@@ -135,6 +146,8 @@ export interface Conn {
   slot: number; // -1 — наблюдатель
   pendingSlot: number;
   lastChat: number;
+  /** когда игрок последний раз менял команду (защита от спама) */
+  lastTeamSwitch?: number;
   sendJson(msg: ServerMsg): void;
   sendBin(buf: ArrayBuffer): void;
   buffered(): number;
@@ -201,16 +214,23 @@ export class Player {
     this.team = team;
   }
 
-  /** гранаты: осколочные, светошумовые, дымовые */
-  nades: [number, number, number] = [0, 0, 0];
+  /** гранаты: осколочные, светошумовые, дымовые, зажигательные */
+  nades: number[] = [0, 0, 0, 0];
   blindUntil = 0;
   /** набор сапёра: обезвреживание за 5 с вместо 10 */
   hasKit = false;
+  /** человек попросил перейти в другую команду — переход в начале следующего раунда */
+  switchTo: Team | null = null;
+  /** вклад в текущий раунд — для выбора MVP */
+  roundKills = 0;
+  roundDamage = 0;
+  /** заложил бомбу или обезвредил её в этом раунде */
+  objective = false;
 
   get weapon(): WeaponDef {
     if (this.slot === SLOT_PRIMARY && this.primary) return this.primary.def;
     if (this.slot === SLOT_PISTOL) return this.pistol.def;
-    if (this.slot >= SLOT_HE && this.slot <= SLOT_HE + 2) return WEAPONS[7 + this.slot - SLOT_HE];
+    if (this.slot >= SLOT_HE && this.slot <= SLOT_FIRE) return nadeWeapon(this.slot - SLOT_HE, this.team);
     return KNIFE;
   }
   get gunSlot(): number {
@@ -294,8 +314,14 @@ export class Room {
   private lastStateSent = 0;
   draining = false;
   onDrained: (() => void) | null = null;
+  /** статистика игроков-людей: сервер сохраняет её в аккаунт */
+  onStat: ((accountId: string, d: StatDelta) => void) | null = null;
+
+  private stat(p: Player | null, d: StatDelta) {
+    if (p && !p.isBot && p.accountId) this.onStat?.(p.accountId, d);
+  }
   /** статистика для теста ботов */
-  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0] as [number, number, number], nadeKills: 0, blinded: 0 };
+  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0, 0], nadeKills: 0, blinded: 0 };
   tickTimeMs = 0;
 
   constructor(
@@ -437,6 +463,8 @@ export class Room {
     p.armor = 0;
     p.helmet = false;
     p.hasKit = false;
+    // гранаты бота человеку не достаются (он их не покупал)
+    p.nades = [0, 0, 0, 0];
     p.kills = 0;
     p.deaths = 0;
     p.cmdQueue.length = 0;
@@ -462,6 +490,74 @@ export class Room {
         this.events.push({ e: 'info', text: `${p.name} отключился, место ждёт ${RECONNECT_HOLD} с` });
       }
     }
+  }
+
+  // ---------- Смена команды (клавиша M) ----------
+
+  /** Бот на стороне team, которого можно заменить человеком (сначала мёртвые). */
+  private botSlotOn(team: Team): Player | null {
+    const bots = this.players.filter((p) => p.team === team && p.isBot && !p.pending);
+    bots.sort((a, b) => Number(a.alive) - Number(b.alive));
+    return bots[0] ?? null;
+  }
+
+  /**
+   * Перейти в другую команду: место берётся у бота той стороны, старое место занимает бот.
+   * Мёртвым, в заморозке и между раундами — сразу, иначе — в начале следующего раунда.
+   * Убийства, смерти и деньги игрок забирает с собой.
+   */
+  switchTeam(conn: Conn, team: number) {
+    if (team !== TEAM_T && team !== TEAM_CT) return;
+    const now = this.time;
+    if (conn.lastTeamSwitch !== undefined && now - conn.lastTeamSwitch < 3) return;
+    // наблюдатель или ждёт места — просто занять место у бота нужной стороны
+    if (conn.slot < 0) {
+      if (conn.pendingSlot >= 0) {
+        const pp = this.players[conn.pendingSlot];
+        if (pp.team === team) return;
+        pp.pending = null;
+        conn.pendingSlot = -1;
+      }
+      const slot = this.botSlotOn(team);
+      if (!slot) return conn.sendJson({ t: 'err', msg: 'В этой команде нет свободных мест' });
+      conn.lastTeamSwitch = now;
+      this.assignHuman(slot, conn);
+      return;
+    }
+    const p = this.players[conn.slot];
+    if (p.conn !== conn) return;
+    if (p.team === team) {
+      if (p.switchTo !== null) {
+        p.switchTo = null;
+        conn.sendJson({ t: 'err', msg: 'Переход в другую команду отменён' });
+      }
+      return;
+    }
+    if (!this.botSlotOn(team as Team)) return conn.sendJson({ t: 'err', msg: 'В этой команде нет свободных мест' });
+    conn.lastTeamSwitch = now;
+    const immediate = !p.alive || this.phase === 'freeze' || this.phase === 'roundEnd' || this.phase === 'matchEnd' || this.phase === 'vote';
+    if (immediate) this.moveHuman(p, team as Team);
+    else {
+      p.switchTo = team as Team;
+      conn.sendJson({ t: 'err', msg: `Перейдёте в команду «${team === TEAM_T ? 'Нападение' : 'Защита'}» в начале следующего раунда` });
+    }
+  }
+
+  /** Перенести человека из слота from на место бота стороны team; from отдаётся боту. */
+  private moveHuman(from: Player, team: Team): boolean {
+    const conn = from.conn;
+    const to = this.botSlotOn(team);
+    if (!conn || !to) return false;
+    const keep = { kills: from.kills, deaths: from.deaths, money: from.money };
+    from.switchTo = null;
+    this.makeBot(from);
+    from.bot!.onRoundStart();
+    this.replaceBot(to, conn);
+    to.kills = keep.kills;
+    to.deaths = keep.deaths;
+    to.money = Math.max(START_MONEY, Math.min(MAX_MONEY, keep.money));
+    this.events.push({ e: 'info', text: `${conn.login} перешёл в команду «${team === TEAM_T ? 'Нападение' : 'Защита'}»` });
+    return true;
   }
 
   private fillFromQueue() {
@@ -506,10 +602,11 @@ export class Room {
 
   buy(p: Player, item: string): boolean {
     if (!this.canBuy(p)) return false;
-    const nt = NADE_TYPES.indexOf(item as (typeof NADE_TYPES)[number]);
+    const nt = NADE_BUY[item] ?? -1;
     if (nt >= 0) {
       const def = WEAPON_BY_KEY[item];
-      if (p.nades[nt] >= NADE_LIMIT[NADE_TYPES[nt]] || p.money < def.price) return false;
+      // молотов — только атаке, зажигательная граната — только защите
+      if (!forTeam(def, p.team) || p.nades[nt] >= NADE_LIMIT[NADE_TYPES[nt]] || p.money < def.price) return false;
       p.money -= def.price;
       p.nades[nt]++;
       return true;
@@ -536,7 +633,7 @@ export class Room {
       return true;
     }
     const def = WEAPON_BY_KEY[item];
-    if (!def || def.slot === SLOT_KNIFE || p.money < def.price) return false;
+    if (!def || def.slot === SLOT_KNIFE || def.kind === 'grenade' || !forTeam(def, p.team) || p.money < def.price) return false;
     if (def.slot === SLOT_PRIMARY) {
       if (p.primary && p.primary.def === def) return false;
       p.primary = inst(def);
@@ -554,7 +651,7 @@ export class Room {
   // ---------- Голосование за карту ----------
 
   /** гранаты ботов нападения за раунд: кто уже закрыл дымом точку и сколько вспышек ушло */
-  botUtil = { smoke: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
+  botUtil = { smoke: [false, false], fire: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
   /** для тестов: всегда эта карта */
   lockMap: string | null = null;
   /** голос аккаунта → id карты */
@@ -610,7 +707,7 @@ export class Room {
       p.hasKit = false;
       p.kills = 0;
       p.deaths = 0;
-      p.nades = [0, 0, 0];
+      p.nades = [0, 0, 0, 0];
     }
     // Стороны не сбрасываем: новый матч начинается той стороной, которой закончился прошлый
     // (иначе после смены сторон в середине матча игрока молча перекидывало бы обратно).
@@ -638,6 +735,11 @@ export class Room {
       this.events.push({ e: 'half' });
     }
     this.roundNum++;
+    // Запрошенные переходы в другую команду (после смены сторон «другая» — уже наоборот)
+    for (const p of this.players) if (!p.isBot && p.switchTo !== null) {
+      if (p.switchTo !== p.team) this.moveHuman(p, p.switchTo);
+      p.switchTo = null;
+    }
     // Ожидающие игроки занимают места ботов
     for (const p of this.players) if (p.pending) this.replaceBot(p, p.pending);
     this.fillFromQueue();
@@ -645,11 +747,12 @@ export class Room {
     this.bomb = { status: 'none', carrier: -1, x: 0, y: 0, z: 0, site: -1, explodeAt: 0, defuser: -1 };
     this.nadesInFlight = [];
     this.smokes = [];
+    this.fires = [];
     this.drops = [];
     // стены восстанавливаются в начале раунда
     this.chips = [];
     this.chipsPerBlock.clear();
-    this.botUtil = { smoke: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
+    this.botUtil = { smoke: [false, false], fire: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
     const spawnIdx = [0, 0];
     const order = [...this.info.spawns[0].keys()];
     const shuffled: [number[], number[]] = [this.shuffle(order.slice()), this.shuffle(order.slice())];
@@ -661,6 +764,9 @@ export class Room {
       p.alive = true;
       p.hp = 100;
       p.wounds = [];
+      p.roundKills = 0;
+      p.roundDamage = 0;
+      p.objective = false;
       p.exploded = false;
       p.hasBomb = false;
       p.useProgress = 0;
@@ -715,8 +821,25 @@ export class Room {
       if (p.team === TEAM_T && loser === TEAM_T && planted) add += PLANT_REWARD;
       p.money = Math.min(MAX_MONEY, p.money + add);
     }
-    this.events.push({ e: 'roundEnd', w: winner, why });
+    // MVP раунда — из победившей команды: убийства, урон и бомба (заложил, если взорвалась; обезвредил)
+    let mvp: Player | null = null;
+    let best = 0;
+    for (const p of this.players) {
+      if (p.team !== winner) continue;
+      const score = p.roundKills * 100 + p.roundDamage + (p.objective ? 150 : 0);
+      if (score > best) {
+        best = score;
+        mvp = p;
+      }
+    }
+    // статистика людей: раунды, победы, MVP
+    for (const p of this.players) {
+      if (p.isBot || !p.conn) continue;
+      this.stat(p, { rounds: 1, roundsWon: p.team === winner ? 1 : 0, mvps: p === mvp ? 1 : 0 });
+    }
+    this.events.push({ e: 'roundEnd', w: winner, why, mvp: mvp ? mvp.id : -1 });
     if (this.scores[winner] >= winTarget(this.roundNum)) {
+      for (const p of this.players) if (!p.isBot && p.conn) this.stat(p, { matches: 1, matchesWon: p.team === winner ? 1 : 0 });
       this.phase = 'matchEnd';
       this.phaseEnd = this.time + MATCH_END_TIME;
       this.stats.matches++;
@@ -814,6 +937,7 @@ export class Room {
             c.useProgress += DT;
             if (c.useProgress >= PLANT_TIME) {
               b.status = 'planted';
+              c.objective = true;
               b.site = site;
               b.carrier = -1;
               c.hasBomb = false;
@@ -857,6 +981,7 @@ export class Room {
         defuser.useProgress += DT;
         if (defuser.useProgress >= (defuser.hasKit ? DEFUSE_TIME_KIT : DEFUSE_TIME)) {
           b.status = 'defused';
+          defuser.objective = true;
           defuser.useProgress = 0;
           defuser.money = Math.min(MAX_MONEY, defuser.money + 300);
           this.events.push({ e: 'defuse' });
@@ -921,6 +1046,8 @@ export class Room {
       this.lastStateSent = now;
       this.broadcastState();
     }
+    // время в игре: раз в секунду всем подключённым людям на поле
+    if (this.tick % TICK_RATE === 0) for (const p of this.players) if (!p.isBot && p.conn) this.stat(p, { playSeconds: 1 });
     this.tickTimeMs = performance.now() - t0;
   }
 
@@ -940,7 +1067,7 @@ export class Room {
 
     // Смена оружия (гранаты — только если они есть)
     if (p.slot >= SLOT_HE && p.nades[p.slot - SLOT_HE] <= 0) p.slot = p.gunSlot;
-    if (cmd.slot !== p.slot && cmd.slot <= SLOT_HE + 2) {
+    if (cmd.slot !== p.slot && cmd.slot <= SLOT_FIRE) {
       const ok = cmd.slot >= SLOT_HE ? p.nades[cmd.slot - SLOT_HE] > 0 : cmd.slot !== SLOT_PRIMARY || !!p.primary;
       if (ok) {
         p.slot = cmd.slot;
@@ -1014,6 +1141,7 @@ export class Room {
       const end: [number, number, number] = [ex + d[0] * maxT, ey + d[1] * maxT, ez + d[2] * maxT];
       if (def.kind !== 'knife' && def.pellets === 1) {
         this.stats.shots++;
+        this.stat(p, { shots: 1, hits: victim ? 1 : 0 });
         if (victim) this.stats.hits++;
       }
       if (def.kind !== 'knife') this.events.push({ e: 'shot', s: p.id, a: [ex, ey, ez], b: end, h });
@@ -1046,6 +1174,12 @@ export class Room {
       dmg *= def.armorPen;
     }
     const d = Math.max(1, Math.round(dmg));
+    // урон по врагу — в статистику и во вклад в раунд (не больше оставшегося здоровья)
+    if (attacker && attacker.team !== victim.team) {
+      const dealt = Math.min(d, victim.hp);
+      attacker.roundDamage += dealt;
+      this.stat(attacker, { damage: dealt });
+    }
     victim.hp -= d;
     if (from) {
       victim.lastHurtFrom = from;
@@ -1057,6 +1191,7 @@ export class Room {
       victim.hp = 0;
       victim.alive = false;
       victim.deaths++;
+      this.stat(victim, { deaths: 1 });
       victim.diedAt = this.time;
       victim.deathYaw = victim.yaw;
       victim.useProgress = 0;
@@ -1069,6 +1204,10 @@ export class Room {
       if (explode) this.stats.explodes++;
       if (attacker && attacker !== victim) {
         attacker.kills++;
+        if (attacker.team !== victim.team) {
+          attacker.roundKills++;
+          this.stat(attacker, { kills: 1, headshots: hs ? 1 : 0, weapon: def.key });
+        }
         attacker.money = Math.min(MAX_MONEY, attacker.money + def.killReward);
       }
       // оружие падает на землю: основное, а если его нет — купленный пистолет
@@ -1078,7 +1217,7 @@ export class Room {
       } else if (victim.pistol.def !== DEFAULT_PISTOL) this.addDrop(victim.pistol, victim.st.x, victim.st.y, victim.st.z);
       victim.primary = null;
       victim.pistol = inst(DEFAULT_PISTOL);
-      victim.nades = [0, 0, 0];
+      victim.nades = [0, 0, 0, 0];
       victim.armor = 0;
       victim.helmet = false;
       victim.hasKit = false;
@@ -1140,9 +1279,12 @@ export class Room {
     const now = this.time;
     for (let i = this.nadesInFlight.length - 1; i >= 0; i--) {
       const n = this.nadesInFlight[i];
+      const fallingBefore = n.st.vy < 0;
       stepNade(n.st, this.info.map);
       const age = now - n.thrownAt;
-      const pop = n.type === 2 ? (n.st.resting && age > 0.5) || age > 3 : age >= NADE_FUSE;
+      // зажигательная разбивается, как только ударилась о пол (скорость вниз сменилась) или через FIRE_FUSE
+      const landed = fallingBefore && n.st.vy >= 0;
+      const pop = n.type === 2 ? (n.st.resting && age > 0.5) || age > 3 : n.type === 3 ? landed || n.st.resting || age >= FIRE_FUSE : age >= NADE_FUSE;
       if (!pop) continue;
       this.nadesInFlight.splice(i, 1);
       const { x, y, z } = n.st;
@@ -1150,10 +1292,69 @@ export class Room {
       const owner = this.players[n.owner];
       if (n.type === 0) this.explodeHE(owner, n.team, x, y, z);
       else if (n.type === 1) this.explodeFlash(x, y, z);
-      else this.smokes.push({ x, y, z, start: now, end: now + SMOKE_TIME });
+      else if (n.type === 2) this.smokes.push({ x, y, z, start: now, end: now + SMOKE_TIME });
+      else this.startFire(n.id, owner, n.team, x, y, z);
       for (const q of this.players) q.bot?.hear(x, z, 30, owner);
     }
     if (this.smokes.length) this.smokes = this.smokes.filter((s) => s.end > now);
+    this.updateFires();
+  }
+
+  // ---------- Огонь (молотов / зажигательная) ----------
+
+  fires: Array<{ id: number; owner: number; team: Team; x: number; y: number; z: number; start: number; end: number }> = [];
+
+  private smokeCovers(x: number, z: number): boolean {
+    const now = this.time;
+    return this.smokes.some((s) => now < s.end - 0.5 && Math.hypot(s.x - x, s.z - z) < SMOKE_RADIUS + FIRE_RADIUS * 0.5);
+  }
+
+  private startFire(id: number, owner: Player, team: Team, x: number, y: number, z: number) {
+    // в воздухе разбилась — огонь падает на пол под ней; в дыму не загорается
+    const fy = this.floorAt(x, y, z);
+    if (this.smokeCovers(x, z)) {
+      this.events.push({ e: 'fireOut', id });
+      return;
+    }
+    this.fires.push({ id, owner: owner.id, team, x, y: fy, z, start: this.time, end: this.time + FIRE_TIME });
+    this.events.push({ e: 'fire', id, p: [x, fy, z], r: FIRE_RADIUS, dur: FIRE_TIME });
+  }
+
+  /** Огонь, в котором стоит точка (для ботов — чтобы выйти). */
+  fireAt(x: number, y: number, z: number, margin = 0): { x: number; z: number } | null {
+    for (const f of this.fires) if (Math.hypot(f.x - x, f.z - z) < FIRE_RADIUS + margin && y > f.y - 0.8 && y < f.y + 1.6) return f;
+    return null;
+  }
+
+  private updateFires() {
+    if (!this.fires.length) return;
+    const now = this.time;
+    const hit = this.tick % 16 === 0; // урон каждые 0,25 с
+    for (let i = this.fires.length - 1; i >= 0; i--) {
+      const f = this.fires[i];
+      if (now >= f.end) {
+        this.fires.splice(i, 1);
+        continue;
+      }
+      // дымовая тушит огонь
+      if (this.smokeCovers(f.x, f.z)) {
+        this.fires.splice(i, 1);
+        this.events.push({ e: 'fireOut', id: f.id });
+        continue;
+      }
+      if (!hit) continue;
+      const owner = this.players[f.owner];
+      const def = nadeWeapon(3, f.team);
+      for (const v of this.players) {
+        // как и осколочная: свою команду (и бросившего) огонь не жжёт
+        if (!v.alive || v.team === f.team) continue;
+        if (!this.fireAt(v.st.x, v.st.y, v.st.z) || Math.hypot(f.x - v.st.x, f.z - v.st.z) >= FIRE_RADIUS) continue;
+        const dx = v.st.x - f.x,
+          dz = v.st.z - f.z;
+        const l = Math.max(0.01, Math.hypot(dx, dz));
+        this.damage(v, owner, FIRE_DPS * 0.25, PART_TORSO, [dx / l, 0.2, dz / l], def, [f.x, f.y, f.z]);
+      }
+    }
   }
 
   /** Сколы от взрыва: лучи во все стороны, крупные выбоины рядом, мелкие — дальше. Пол тоже. */
@@ -1503,8 +1704,8 @@ export class Room {
       const p = c.slot >= 0 ? this.players[c.slot] : null;
       // мёртвые и наблюдатели видят всё, как в спектаторском режиме
       c.sendJson(p ? (p.alive ? byTeam[p.team] : byTeam[p.team]) : spec);
-      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades] as [number, number, number], kit: p.hasKit });
-      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0], kit: false, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
+      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades], kit: p.hasKit });
+      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0, 0], kit: false, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
     }
   }
 
@@ -1518,6 +1719,7 @@ export class Room {
       wounds: this.players.filter((p) => p.wounds.length).map((p) => ({ i: p.id, ops: p.wounds.slice() })),
       tracers: true,
       smokes: this.smokes.map((s) => ({ x: s.x, y: s.y, z: s.z, left: s.end - this.time })),
+      fires: this.fires.map((f) => ({ id: f.id, x: f.x, y: f.y, z: f.z, left: f.end - this.time })),
       chips: this.chips.slice(),
     };
   }

@@ -12,6 +12,8 @@ import {
   WEAPONS,
   zoneName,
   MAP_LIST,
+  forTeam,
+  nadeWeapon,
   overtimeOf,
   winTarget,
   type MapInfo,
@@ -433,15 +435,18 @@ export class Hud {
     if (!show) return;
     this.buyMenu.innerHTML = '';
     el('div', 'buy-title', this.buyMenu, canBuy ? `Покупка · $${money}` : 'Покупка недоступна (вне зоны или время вышло)');
+    // только то, что продаётся своей стороне (молотов — атаке, зажигательная граната — защите)
+    const mine = (w: (typeof WEAPONS)[number]) => team < 0 || forTeam(w, team);
+    const byPrice = (a: { price: number }, b: { price: number }) => a.price - b.price;
     const cols: Array<{ title: string; items: Array<{ key: string; name: string; price: number }> }> = [
-      { title: 'Пистолеты', items: WEAPONS.filter((w) => w.slot === SLOT_PISTOL).map((w) => ({ key: w.key, name: w.name, price: w.price })) },
-      { title: 'Основное', items: WEAPONS.filter((w) => w.slot === SLOT_PRIMARY).map((w) => ({ key: w.key, name: w.name, price: w.price })) },
+      { title: 'Пистолеты', items: WEAPONS.filter((w) => w.slot === SLOT_PISTOL && mine(w)).map((w) => ({ key: w.key, name: w.name, price: w.price })).sort(byPrice) },
+      { title: 'Основное', items: WEAPONS.filter((w) => w.slot === SLOT_PRIMARY && mine(w)).map((w) => ({ key: w.key, name: w.name, price: w.price })).sort(byPrice) },
       {
         title: 'Снаряжение',
         items: [
           { key: 'armor', name: 'Бронежилет', price: ARMOR_PRICE },
           { key: 'helmet', name: 'Броня и шлем', price: HELMET_PRICE },
-          ...WEAPONS.filter((w) => w.kind === 'grenade').map((w) => ({ key: w.key, name: w.name + ' граната', price: w.price })),
+          ...WEAPONS.filter((w) => w.kind === 'grenade' && mine(w)).map((w) => ({ key: w.key, name: w.name, price: w.price })),
           ...(team === 1 ? [{ key: 'kit', name: 'Набор сапёра (5 с)', price: KIT_PRICE }] : []),
         ],
       },
@@ -463,7 +468,7 @@ export class Hud {
         b.dataset.key = it.key;
       }
     }
-    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка · гранаты: не больше 1 осколочной, 2 светошумовых и 1 дымовой');
+    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка · гранаты: не больше 1 осколочной, 2 светошумовых, 1 дымовой и 1 зажигательной');
   }
 
   buyHotkey(n: number): string | null {
@@ -476,13 +481,13 @@ export class Hud {
   }
 }
 
-export function slotList(primary: number | null, pistol: number, active: number, nades: [number, number, number] = [0, 0, 0], kit = false) {
+export function slotList(primary: number | null, pistol: number, active: number, nades: number[] = [0, 0, 0, 0], kit = false, team = 0) {
   const out: Array<{ slot: number; name: string; active: boolean; key?: string }> = [];
   if (primary !== null) out.push({ slot: SLOT_PRIMARY, name: WEAPONS[primary].name, active: active === SLOT_PRIMARY });
   out.push({ slot: SLOT_PISTOL, name: WEAPONS[pistol].name, active: active === SLOT_PISTOL });
   out.push({ slot: SLOT_KNIFE, name: 'Нож', active: active === SLOT_KNIFE });
   nades.forEach((n, i) => {
-    if (n > 0) out.push({ slot: 3 + i, key: '4', name: WEAPONS[7 + i].name + (n > 1 ? ` ×${n}` : ''), active: active === 3 + i });
+    if (n > 0) out.push({ slot: 3 + i, key: '4', name: nadeWeapon(i, team).name + (n > 1 ? ` ×${n}` : ''), active: active === 3 + i });
   });
   if (kit) out.push({ slot: 9, key: '✚', name: 'Набор сапёра', active: false });
   return out;

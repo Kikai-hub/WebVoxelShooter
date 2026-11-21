@@ -2,7 +2,7 @@
 // Раскладка по мотиву меню тактических шутеров, графика — своя, воксельная.
 
 import './style.css';
-import { AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, type WeaponDef } from '../../shared/src/index';
+import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
 import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type Settings } from './api';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
@@ -142,7 +142,7 @@ function showRecovery(modal: HTMLElement, code: string, done: () => void) {
 
 // ---------- Меню ----------
 
-type Tab = 'play' | 'inventory' | 'loadout' | 'settings';
+type Tab = 'play' | 'inventory' | 'loadout' | 'stats' | 'settings';
 
 function showMenu(tab: Tab = 'play') {
   if (!account) return;
@@ -163,6 +163,7 @@ function showMenu(tab: Tab = 'play') {
     ['play', 'ИГРАТЬ'],
     ['inventory', 'ИНВЕНТАРЬ'],
     ['loadout', 'СНАРЯЖЕНИЕ'],
+    ['stats', 'СТАТИСТИКА'],
     ['settings', 'НАСТРОЙКИ'],
   ];
   for (const [t, label] of tabs) {
@@ -246,6 +247,8 @@ function showMenu(tab: Tab = 'play') {
     renderInventory(body, center, canvas);
   } else if (tab === 'loadout') {
     renderLoadout(body, center, canvas);
+  } else if (tab === 'stats') {
+    renderStats(body);
   } else {
     renderSettings(body);
   }
@@ -271,6 +274,62 @@ function statBars(def: WeaponDef): HTMLElement {
   }
   box.append(h('div', { class: 'stat' }, h('span', {}, 'Цена в игре'), h('em', {}, '$' + def.price)));
   return box;
+}
+
+function renderStats(body: HTMLElement) {
+  const panel = h('div', { class: 'panel stats-panel' });
+  panel.append(h('div', { class: 'panel-title' }, 'СТАТИСТИКА'), h('p', { class: 'hint' }, 'Загрузка…'));
+  body.append(panel);
+  void api
+    .stats()
+    .then(({ stats: s }) => {
+      panel.innerHTML = '';
+      panel.append(h('div', { class: 'panel-title' }, `СТАТИСТИКА · ${account?.login ?? ''}`));
+      if (!s.rounds && !s.kills && !s.deaths) {
+        panel.append(h('p', { class: 'hint' }, 'Пока пусто: сыграйте хотя бы раунд — статистика копится с каждым матчем.'));
+        return;
+      }
+      const pct = (a: number, b: number) => (b > 0 ? `${Math.round((a / b) * 100)}%` : '—');
+      const num = (v: number, d = 2) => (Number.isFinite(v) ? v.toFixed(d) : '—');
+      const minutes = s.playSeconds / 60;
+      const time = s.playSeconds >= 3600 ? `${Math.floor(s.playSeconds / 3600)} ч ${Math.floor((s.playSeconds % 3600) / 60)} мин` : `${Math.max(0, Math.round(minutes))} мин`;
+      // любимое оружие — с наибольшим числом убийств
+      const weapons = Object.entries(s.weapons).sort((a, b) => b[1] - a[1]);
+      const fav = weapons[0];
+      const favDef = fav ? WEAPONS.find((w) => w.key === fav[0]) : undefined;
+      const cards: Array<[string, string, string?]> = [
+        ['Убийства', String(s.kills)],
+        ['Смерти', String(s.deaths)],
+        ['K/D', num(s.kills / Math.max(1, s.deaths)), 'убийств на одну смерть'],
+        ['MVP', String(s.mvps), 'лучший игрок раунда'],
+        ['В голову', pct(s.headshots, s.kills), 'доля убийств в голову'],
+        ['Точность', pct(s.hits, s.shots), 'попаданий из выстрелов'],
+        ['Урон за раунд', num(s.damage / Math.max(1, s.rounds), 0), 'средний (ADR)'],
+        ['Убийств в минуту', num(minutes > 0 ? s.kills / minutes : 0), `в секунду — ${num(s.playSeconds > 0 ? s.kills / s.playSeconds : 0, 3)}`],
+        ['Убийств за раунд', num(s.kills / Math.max(1, s.rounds)), ''],
+        ['Раунды', `${s.roundsWon} / ${s.rounds}`, `побед ${pct(s.roundsWon, s.rounds)}`],
+        ['Матчи', `${s.matchesWon} / ${s.matches}`, `побед ${pct(s.matchesWon, s.matches)}`],
+        ['Время в игре', time],
+      ];
+      const grid = h('div', { class: 'stat-grid' });
+      for (const [label, value, sub] of cards) grid.append(h('div', { class: 'stat-card' }, h('span', {}, label), h('b', {}, value), ...(sub ? [h('small', {}, sub)] : [])));
+      panel.append(grid);
+      if (favDef && fav) {
+        panel.append(h('div', { class: 'panel-title small' }, 'ЛЮБИМОЕ ОРУЖИЕ'), h('div', { class: 'fav-weapon' }, h('b', {}, favDef.name), h('span', {}, `${fav[1]} убийств · ${pct(fav[1], s.kills)} всех`)));
+        const list = h('div', { class: 'weapon-bars' });
+        for (const [key, n] of weapons.slice(0, 5)) {
+          const def = WEAPONS.find((w) => w.key === key);
+          const bar = h('i');
+          bar.style.width = `${Math.round((n / fav[1]) * 100)}%`;
+          list.append(h('div', { class: 'weapon-bar' }, h('span', {}, def?.name ?? key), h('div', { class: 'bar' }, bar), h('em', {}, String(n))));
+        }
+        panel.append(list);
+      }
+    })
+    .catch(() => {
+      panel.innerHTML = '';
+      panel.append(h('div', { class: 'panel-title' }, 'СТАТИСТИКА'), h('p', { class: 'hint' }, 'Не удалось загрузить статистику.'));
+    });
 }
 
 function renderInventory(body: HTMLElement, center: HTMLElement, canvas: HTMLCanvasElement) {
@@ -466,6 +525,78 @@ function renderSettings(body: HTMLElement) {
   check('Режим «конфетти» вместо крови', () => s.blood === 'confetti', (v) => (s.blood = v ? 'confetti' : 'blood'));
   range('Громкость', 'volume', 0, 1, 0.05);
   panel.append(msg);
+
+  // ---- Управление: до двух клавиш на действие ----
+  s.binds = sanitizeBinds(s.binds);
+  const keysPanel = h('div', { class: 'panel settings binds' });
+  body.append(keysPanel);
+  const keysMsg = h('div', { class: 'hint' }, 'Нажмите на клавишу, затем новую клавишу. Esc — отмена, Backspace — убрать.');
+  let capture: { action: Action; idx: number; btn: HTMLButtonElement } | null = null;
+  const renderBinds = () => {
+    keysPanel.innerHTML = '';
+    keysPanel.append(h('div', { class: 'panel-title' }, 'УПРАВЛЕНИЕ'));
+    for (const a of ACTIONS) {
+      const row = h('div', { class: 'bind-row' }, h('span', {}, a.label));
+      for (const idx of [0, 1]) {
+        const code = s.binds[a.id][idx];
+        const btn = h('button', { class: 'btn small bind-key' + (code ? '' : ' empty') }, code ? keyLabel(code) : '—');
+        btn.onclick = () => {
+          capture?.btn.classList.remove('wait');
+          capture = { action: a.id, idx, btn };
+          btn.classList.add('wait');
+          btn.textContent = 'нажмите…';
+        };
+        row.append(btn);
+      }
+      keysPanel.append(row);
+    }
+    const reset = h('button', { class: 'btn' }, 'Сбросить по умолчанию');
+    reset.onclick = () => {
+      s.binds = defaultBinds();
+      renderBinds();
+      void save();
+      keysMsg.textContent = 'Управление сброшено';
+    };
+    keysPanel.append(reset, keysMsg);
+  };
+  const onBindKey = (e: KeyboardEvent) => {
+    if (!capture) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { action, idx } = capture;
+    capture = null;
+    if (e.code === 'Escape') {
+      renderBinds();
+      return;
+    }
+    const list = [...s.binds[action]];
+    if (e.code === 'Backspace' || e.code === 'Delete') list.splice(idx, 1);
+    else {
+      // клавиша уже занята другим действием — снимаем её там
+      for (const other of ACTIONS) {
+        if (other.id === action) continue;
+        const i = s.binds[other.id].indexOf(e.code);
+        if (i >= 0) {
+          s.binds[other.id] = s.binds[other.id].filter((c) => c !== e.code);
+          keysMsg.textContent = `«${keyLabel(e.code)}» снята с действия «${other.label}»`;
+        }
+      }
+      list[idx] = e.code;
+    }
+    s.binds[action] = [...new Set(list.filter(Boolean))].slice(0, 2);
+    renderBinds();
+    void save();
+  };
+  window.addEventListener('keydown', onBindKey, true);
+  // слушатель живёт, пока открыта вкладка настроек
+  const obs = new MutationObserver(() => {
+    if (!keysPanel.isConnected) {
+      window.removeEventListener('keydown', onBindKey, true);
+      obs.disconnect();
+    }
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+  renderBinds();
 
   const acc = h('div', { class: 'panel settings' });
   body.append(acc);

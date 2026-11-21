@@ -20,6 +20,8 @@ import {
   TEAM_T,
   inRect,
   NADE_FUSE,
+  FIRE_FUSE,
+  FIRE_RADIUS,
   SLOT_HE,
   stepNade,
   throwNade,
@@ -137,16 +139,28 @@ export class Bot {
   private buy() {
     const p = this.p;
     const r = this.room;
-    const rifle = p.team === TEAM_T || this.rng.next() < 0.85 ? 'vikhr' : 'sokol';
+    const t = p.team === TEAM_T;
+    const pick = (...opts: Array<[string, number]>) => {
+      // взвешенный случайный выбор
+      let s = this.rng.next() * opts.reduce((a, o) => a + o[1], 0);
+      for (const [k, w] of opts) if ((s -= w) <= 0) return k;
+      return opts[0][0];
+    };
+    // защита иногда берёт снайперскую; атака — почти всегда автомат
+    const sniper = !t && this.rng.next() < 0.15;
     // Не копит на «идеальный» раунд: покупает лучшее, что может
     if (!p.primary) {
-      if (p.money >= 2700 + 650) r.buy(p, rifle === 'sokol' && p.money >= 4750 + 650 ? 'sokol' : 'vikhr');
-      else if (p.money >= 1250 + 650) r.buy(p, this.rng.next() < 0.7 ? 'shmel' : 'molot');
-      else if (p.money >= 1250 && this.rng.next() < 0.5) r.buy(p, 'shmel');
+      if (sniper && p.money >= 4750 + 650) r.buy(p, p.money >= 5000 + 650 && this.rng.next() < 0.5 ? 'awm' : 'sokol');
+      else if (p.money >= 3300 + 650) r.buy(p, t ? pick(['vikhr', 0.65], ['aug', 0.35]) : pick(['m4a1', 0.6], ['aug', 0.25], ['vikhr', 0.15]));
+      else if (p.money >= 2900 + 650) r.buy(p, t ? 'vikhr' : pick(['m4a1', 0.8], ['vikhr', 0.2]));
+      else if (p.money >= 2700 + 650) r.buy(p, 'vikhr');
+      else if (p.money >= 1250 + 650) r.buy(p, t ? pick(['mac10', 0.35], ['shmel', 0.25], ['skorpion', 0.15], ['sawedoff', 0.15], ['molot', 0.1]) : pick(['ump', 0.35], ['shmel', 0.3], ['molot', 0.2], ['mac10', 0.15]));
+      else if (p.money >= 1100 && this.rng.next() < 0.5) r.buy(p, t ? pick(['mac10', 0.5], ['skorpion', 0.5]) : pick(['shmel', 0.5], ['ump', 0.5]));
     }
     if (p.money >= 1000 && p.armor < 100) r.buy(p, 'helmet');
     else if (p.money >= 650 && p.armor < 100) r.buy(p, 'armor');
-    if (!p.primary && p.money >= 700 && p.pistol.def.key === 'osa' && this.rng.next() < 0.5) r.buy(p, 'gyurza');
+    if (!p.primary && p.money >= 300 && p.pistol.def.key === 'osa' && this.rng.next() < 0.5)
+      r.buy(p, p.money >= 800 ? pick(['gyurza', 0.4], ['python', 0.25], ['sw29', 0.2], ['beretta', 0.15]) : p.money >= 600 ? pick(['python', 0.6], ['beretta', 0.4]) : 'beretta');
     // защитник с оружием почти всегда берёт набор сапёра
     if (p.team === TEAM_CT && p.primary && p.money >= 400 && this.rng.next() < 0.7) r.buy(p, 'kit');
     // гранаты — на оставшиеся деньги, не всегда
@@ -155,16 +169,18 @@ export class Bot {
         p.team === TEAM_T
           ? [
               ['smoke', 0.45],
+              ['molotov', 0.4],
               ['flash', 0.55],
-              ['he', 0.45],
+              ['he', 0.4],
               ['flash', 0.25],
             ]
           : [
-              ['he', 0.5],
+              ['incgrenade', 0.35],
+              ['he', 0.45],
               ['smoke', 0.45],
               ['flash', 0.4],
             ];
-      for (const [k, chance] of wish) if (p.money >= 300 && this.rng.next() < chance) r.buy(p, k);
+      for (const [k, chance] of wish) if (p.money >= 600 && this.rng.next() < chance) r.buy(p, k);
     }
     this.wantSlot = p.primary ? SLOT_PRIMARY : SLOT_PISTOL;
   }
@@ -222,12 +238,17 @@ export class Bot {
     const ex = p.st.x,
       ey = p.st.y + eyeHeight(p.st),
       ez = p.st.z;
-    const steps = type === 2 ? 192 : Math.round(NADE_FUSE * 64);
+    const steps = type === 2 ? 192 : type === 3 ? Math.round(FIRE_FUSE * 64) : Math.round(NADE_FUSE * 64);
     let best: [number, number] = [0, Infinity];
     let bestScore = Infinity;
     for (let pitch = -0.35; pitch <= 1.2; pitch += 0.06) {
       const st = throwNade(ex, ey, ez, yaw, pitch, 0, 0);
-      for (let i = 0; i < steps && !st.resting; i++) stepNade(st, map);
+      for (let i = 0; i < steps && !st.resting; i++) {
+        const falling = st.vy < 0;
+        stepNade(st, map);
+        // зажигательная разбивается при первом касании пола
+        if (type === 3 && falling && st.vy >= 0) break;
+      }
       const err = Math.hypot(st.x - tx, st.z - tz);
       // светошумовая лучше взрывается в воздухе над укрытиями
       const score = type === 1 ? err - Math.min(st.y - p.st.y, 5) * 0.5 : err;
@@ -278,7 +299,10 @@ export class Bot {
         cz = (s.z0 + s.z1) / 2;
       const d = Math.hypot(cx - p.st.x, cz - p.st.z);
       const util = r.botUtil;
-      if (d < 17 && d > 7 && p.nades[2] > 0 && !util.smoke[site]) {
+      if (d < 16 && d > 7 && p.nades[3] > 0 && !util.fire[site] && util.smoke[site] && this.rng.next() < 0.5) {
+        // молотов в глубину точки — выкурить защитников из укрытий
+        if (this.planThrow(3, cx, cz, 3.5)) util.fire[site] = true;
+      } else if (d < 17 && d > 7 && p.nades[2] > 0 && !util.smoke[site]) {
         const ct = spawnCenter(info, TEAM_CT);
         const l = Math.hypot(ct[0] - cx, ct[1] - cz) || 1;
         // точка между центром точки и базой защиты
@@ -296,10 +320,31 @@ export class Bot {
       // 3) Защита слышит врага, но не видит: осколочная или вспышка на подход
       const hd = Math.hypot(this.heard.x - p.st.x, this.heard.z - p.st.z);
       if (hd < 20 && this.rng.next() < 0.3) {
-        if (p.nades[0] > 0 && hd > 7) this.planThrow(0, this.heard.x, this.heard.z, 3);
+        // зажигательная перекрывает подход надолго — её первой, если есть
+        if (p.nades[3] > 0 && hd > 7) this.planThrow(3, this.heard.x, this.heard.z, 3);
+        else if (p.nades[0] > 0 && hd > 7) this.planThrow(0, this.heard.x, this.heard.z, 3);
         else if (p.nades[1] > 0) this.planThrow(1, this.heard.x, this.heard.z, 4);
       }
     }
+  }
+
+  /** Стоит в огне (или цель пути в огне) — уйти из него на несколько метров и переждать. */
+  private escapeFire() {
+    const p = this.p;
+    const r = this.room;
+    if (!r.fires.length) return;
+    const f = r.fireAt(p.st.x, p.st.y, p.st.z, 0.6) ?? (this.goal && this.goal.kind !== 'investigate' ? r.fireAt(this.goal.x, this.goal.y ?? p.st.y, this.goal.z, 0.6) : null);
+    if (!f) return;
+    // точка за краем огня, по направлению от его центра
+    let dx = p.st.x - f.x,
+      dz = p.st.z - f.z;
+    const l = Math.hypot(dx, dz) || 1;
+    dx /= l;
+    dz /= l;
+    const tx = f.x + dx * (FIRE_RADIUS + 2.5),
+      tz = f.z + dz * (FIRE_RADIUS + 2.5);
+    const pt = r.nav.randomIn(tx - 1.5, tz - 1.5, tx + 1.5, tz + 1.5, () => this.rng.next()) ?? [tx, tz];
+    this.setGoal(pt[0], pt[1], 'investigate', 3, yawTo(f.x - pt[0], f.z - pt[1]));
   }
 
   /** Союзник бросил вспышку: отвернуться от места взрыва на время. */
@@ -477,6 +522,7 @@ export class Bot {
         (this.goal.kind === 'plant' && !p.hasBomb) ||
         (p.hasBomb && this.goal.kind !== 'plant');
       if (needNew) this.pickStrategicGoal();
+      this.escapeFire();
       this.considerGrenades();
       // услышал — иногда идёт проверить (только если сейчас держит позицию)
       if (this.heard && !this.target && now - this.heard.t < 0.3 && this.goal && (this.goal.kind === 'hold' || this.goal.kind === 'guard') && this.rng.next() < 0.35) {

@@ -1,6 +1,6 @@
 // Импорт звуков выстрелов из сырых студийных записей (WAV 192 кГц / 24 бит, стерео)
 // в лёгкие файлы для браузера: моно, 48 кГц, 16 бит, начало точно по выстрелу, хвост с затуханием.
-// Запуск: npx tsx tools/importWeaponSounds.ts "<папка Master Tracks>"
+// Запуск: npx tsx tools/importWeaponSounds.ts "<папка Master Tracks>" [ключи через запятую]
 // Результат: client/public/sounds/<оружие>_<n>.wav
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -19,6 +19,14 @@ const PLAN: Record<string, { dir: string; shots: string[]; len: number }> = {
   molot: { dir: 'Nova', shots: ['O_20@1.14', 'O_20@5.214', 'O_16@1.162'], len: 1.1 },
   vikhr: { dir: 'AK-47', shots: ['C_18@1.166', 'C_17@0.34', 'C_32@0.73'], len: 0.6 },
   sokol: { dir: 'Mosin Nagant', shots: ['M_25@1.098', 'M_23@1.004', 'M_25@9.384'], len: 1.4 },
+  m4a1: { dir: 'AR-15', shots: ['D_29@0.634', 'D_27@0.502', 'D_24@0.582'], len: 0.6 },
+  aug: { dir: 'AR-15', shots: ['D_29@5.576', 'D_27@4.786', 'D_23@0.524'], len: 0.6 },
+  awm: { dir: 'Arisaka', shots: ['E_19@0.34', 'E_17@4.2', 'E_23@0.426'], len: 1.4 },
+  beretta: { dir: 'Bersa', shots: ['F_45@0.48', 'F_44@0.528', 'F_43@0.42'], len: 0.7 },
+  skorpion: { dir: 'Bersa', shots: ['F_45@4.554', 'F_44@5.97', 'F_18@0.674'], len: 0.45 },
+  python: { dir: 'Smith & Wesson 642', shots: ['V_24@0.818', 'V_26@0.742', 'V_23@5.588'], len: 0.8 },
+  sw29: { dir: 'Ruger Single Six', shots: ['S_18@0.606', 'S_17@0.96', 'S_15@0.772'], len: 0.8 },
+  sawedoff: { dir: 'Mossberg', shots: ['N_29@1.618', 'N_27@13.864', 'N_25@18.332'], len: 1.0 },
 };
 const OUT_RATE = 48000;
 const OUT_DIR = 'client/public/sounds';
@@ -128,7 +136,10 @@ if (!src) {
 }
 mkdirSync(OUT_DIR, { recursive: true });
 let total = 0;
+// третий аргумент — только эти стволы через запятую (остальные файлы не трогаем)
+const only = process.argv[3] ? new Set(process.argv[3].split(',')) : null;
 for (const [key, p] of Object.entries(PLAN)) {
+  if (only && !only.has(key)) continue;
   p.shots.forEach((shot, n) => {
     const [name, at] = shot.split('@');
     const w = readWav(join(src, p.dir, name + '.wav'));

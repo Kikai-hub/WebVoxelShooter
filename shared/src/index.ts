@@ -10,3 +10,4 @@ export * from './nav';
 export * from './maps';
 export * from './nade';
 export * from './chips';
+export * from './binds';

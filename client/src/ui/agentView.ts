@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { MAPS, computePose, newPoseAnim, POSE_SIZE, WEAPONS } from '../../../shared/src/index';
 import { buildMapMeshes } from '../game/mapMesh';
 import { VoxelBody } from '../game/voxelBody';
+import { applyFore } from '../game/weaponModels';
 
 /** Один кадр карты для фона меню (dataURL). */
 export function renderMenuBackground(width: number, height: number): string {
@@ -157,6 +158,7 @@ export class AgentView {
     a.armPitch = breathe * 0.02;
     a.reload = c.armL;
     a.weapon = this.weaponKind;
+    applyFore(a, this.weaponKey);
     a.headYaw = c.look;
     const yaw = Math.PI + 0.35 + this.dragYaw;
     computePose(0, 0, 0, yaw, c.pitch, false, this.pose, a);

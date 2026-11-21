@@ -12,6 +12,8 @@ import {
   BTN_RELOAD,
   BTN_DROP,
   SMOKE_TIME,
+  FIRE_RADIUS,
+  FIRE_TIME,
   BTN_RIGHT,
   BTN_USE,
   DEFUSE_TIME,
@@ -32,6 +34,11 @@ import {
   SF_USING,
   SLOT_KNIFE,
   SLOT_PISTOL,
+  defaultBinds,
+  keyLabel,
+  sanitizeBinds,
+  type Action,
+  type Binds,
   OT_MONEY,
   REGULATION_ROUNDS,
   overtimeOf,
@@ -72,11 +79,12 @@ import { Debris } from './debris';
 import { ImpactMarks, Tracers } from './effects';
 import { Hud, TEAM_LABEL, slotList } from './hud';
 import { AgentAnimator } from './animator';
+import { applyFore } from './weaponModels';
 import { MapRenderer } from './mapMesh';
 import { MAT_COLORS } from './atlas';
 import { Ragdoll } from './ragdoll';
 import { ViewModel } from './viewmodel';
-import { DropsView, NadeView, SmokeView } from './nades';
+import { DropsView, FireView, NadeView, SmokeView } from './nades';
 import { VoxelBody } from './voxelBody';
 
 interface Snap {
@@ -185,6 +193,14 @@ export class Game {
   private buyOpen = false;
   private specTarget = -1;
   private settings: Settings;
+  /** управление: действие → клавиши (из настроек аккаунта) */
+  private binds: Binds = defaultBinds();
+  private bound(code: string, a: Action): boolean {
+    return this.binds[a]?.includes(code) ?? false;
+  }
+  private held(a: Action): boolean {
+    return this.binds[a]?.some((c) => this.keys.has(c) || this.tapped.has(c)) ?? false;
+  }
   private bombBeepAt = 0;
   private pose = new Float32Array(POSE_SIZE);
   private mapHit = newMapHit();
@@ -232,7 +248,7 @@ export class Game {
     this.debris = new Debris(this.info.map, 2000);
     this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh, this.scorch.mesh);
     this.nadeView = new NadeView(() => this.info.map);
-    this.scene.add(this.nadeView.group, this.smokeView.mesh, this.dropsView.group);
+    this.scene.add(this.nadeView.group, this.smokeView.mesh, this.fireView.mesh, this.dropsView.group);
 
     this.bombMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.18, 0.26), new THREE.MeshLambertMaterial({ color: 0x3b3f2a }));
     const screen = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.1), new THREE.MeshBasicMaterial({ color: 0xff2020 }));
@@ -269,8 +285,9 @@ export class Game {
 
   private nadeView: NadeView;
   private smokeView = new SmokeView();
+  private fireView = new FireView();
   private dropsView = new DropsView();
-  private nades: [number, number, number] = [0, 0, 0];
+  private nades: number[] = [0, 0, 0, 0];
   private hasKit = false;
   private mapRenderer: MapRenderer;
   private skyGroup: THREE.Group;
@@ -289,6 +306,7 @@ export class Game {
     this.debris.clear();
     this.nadeView.clear();
     this.smokeView.clear();
+    this.fireView.clear();
     this.dropsView.clear();
     this.impacts.clear();
     this.scorch.clear();
@@ -341,12 +359,22 @@ export class Game {
   }
 
   applySettings(s: Settings) {
-    this.settings = { ...s };
+    this.settings = { ...s, binds: sanitizeBinds(s.binds) };
+    this.binds = this.settings.binds;
+    this.updatePauseHint();
     this.camera.fov = s.fov * 0.75;
     this.camera.updateProjectionMatrix();
     this.tracers.enabled = s.tracers;
     this.tracers.brightness = s.tracerBright;
     this.sfx.volume = s.volume;
+  }
+
+  /** Подсказка по управлению в паузе — по текущим привязкам. */
+  private updatePauseHint() {
+    const el = this.pauseEl?.querySelector(".pause-hint");
+    if (!el) return;
+    const k = (a: Action) => this.binds[a].map(keyLabel).join("/") || "—";
+    el.textContent = `${k("forward")}${k("left")}${k("back")}${k("right")} — ход · ${k("jump")} — прыжок · ${k("crouch")} — присесть · ${k("use")} — заложить/обезвредить/подобрать · ${k("reload")} — перезарядка · ${k("primary")}/${k("pistol")}/${k("knife")}, ${k("lastWeapon")} — оружие · ${k("grenade")} — гранаты · ${k("drop")} — выбросить · ${k("buy")} — покупка · ${k("team")} — команда · ${k("scoreboard")} — счёт · ${k("chat")} — чат · ПКМ — прицел снайперки. Клавиши меняются в главном меню: Настройки → Управление.`;
   }
 
   private buildPause() {
@@ -362,7 +390,7 @@ export class Game {
         <label>Громкость <input type="range" min="0" max="1" step="0.05" data-s="volume"></label>
         <label><input type="checkbox" data-s="confetti"> Режим «конфетти» вместо крови</label>
         <button data-a="exit" class="btn">Выйти в меню</button>
-        <div class="pause-hint">WASD — ход · Пробел — прыжок · C/Ctrl — присесть · E — заложить/обезвредить · R — перезарядка · 1/2/3, Q — оружие · 4 — гранаты · G — выбросить оружие · E — подобрать · B — покупка · Tab — счёт · Enter — чат · ПКМ — прицел снайперки</div>
+        <div class="pause-hint"></div>
       </div>`;
     const inputs = this.pauseEl.querySelectorAll<HTMLInputElement>('input[data-s]');
     const sync = () => {
@@ -374,6 +402,7 @@ export class Game {
       });
     };
     sync();
+    this.updatePauseHint();
     inputs.forEach((i) =>
       i.addEventListener('input', () => {
         const k = i.dataset.s!;
@@ -569,10 +598,12 @@ export class Game {
     this.scorch.clear();
     this.nadeView.clear();
     this.smokeView.clear();
+    this.fireView.clear();
     this.mapRenderer.clearChips();
     for (let i = 0; i + 9 < (m.chips ?? []).length; i += 10) this.mapRenderer.applyChip(chipFromArray(m.chips, i));
     const nowS = performance.now() / 1000;
     for (const s of m.smokes ?? []) this.smokeView.add(s.x, s.y, s.z, s.left, nowS);
+    for (const fi of m.fires ?? []) this.fireView.add(fi.id, fi.x, fi.y, fi.z, FIRE_RADIUS, fi.left, FIRE_TIME, nowS);
     for (const c of m.corpses) {
       const p = this.getPlayer(c.i);
       p.dead = true;
@@ -743,7 +774,11 @@ export class Game {
         this.specTarget = -1;
         break;
       case 'roundEnd':
-        this.hud.showCenter(`Победа: ${TEAM_LABEL[e.w]}`, e.why, 5, now, e.w === this.myTeam ? 'win' : 'lose');
+        {
+          const mvp = e.mvp !== undefined && e.mvp >= 0 ? this.pub(e.mvp) : undefined;
+          this.hud.showCenter(`Победа: ${TEAM_LABEL[e.w]}`, e.why + (mvp ? ` · MVP: ${mvp.n}` : ""), 5, now, e.w === this.myTeam ? "win" : "lose");
+          if (e.mvp === this.myId && this.myId >= 0) this.hud.info("Вы — MVP раунда!");
+        }
         break;
       case 'matchEnd':
         this.hud.showCenter(`Матч окончен: победа — ${TEAM_LABEL[e.w]}`, 'Новый матч через 20 секунд', 19, now, 'win');
@@ -798,10 +833,26 @@ export class Game {
         } else if (e.type === 1) {
           this.sfx.flashbang(d);
           for (let i = 0; i < 20; i++) this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 6, Math.random() * 5, (Math.random() - 0.5) * 6, 0xffffff, 0.4, 1);
-        } else {
+        } else if (e.type === 2) {
           this.sfx.smoke(d);
           this.smokeView.add(x, y, z, SMOKE_TIME, performance.now() / 1000);
+        } else {
+          // зажигательная разбилась: осколки стекла и брызги горючего (огонь придёт событием fire)
+          this.sfx.glassBreak(d);
+          for (let i = 0; i < 24; i++) this.debris.spawn(x, y + 0.1, z, (Math.random() - 0.5) * 5, Math.random() * 3, (Math.random() - 0.5) * 5, i % 3 ? 0xff9a2a : 0x6b4a1e, 0.5, 1);
         }
+        break;
+      }
+      case 'fire': {
+        const [x, y, z] = e.p;
+        this.fireView.add(e.id, x, y, z, e.r, e.dur, e.dur, performance.now() / 1000);
+        this.sfx.fire(Math.hypot(x - eye.x, y - eye.y, z - eye.z), e.dur);
+        break;
+      }
+      case 'fireOut': {
+        // дым потушил огонь: шипение и пар
+        this.fireView.remove(e.id);
+        this.sfx.smoke(10);
         break;
       }
       case 'flash': {
@@ -931,7 +982,7 @@ export class Game {
     this.pauseEl.style.display = 'none';
     const el = this.renderer.domElement as any;
     const fallback = () => {
-      if (!this.realLocked() && !this.hud.chatOpen && !this.buyOpen) this.enterSoftLock();
+      if (!this.realLocked() && !this.hud.chatOpen && !this.buyOpen && !this.teamMenuOpen) this.enterSoftLock();
     };
     try {
       const r = el.requestPointerLock?.({ unadjustedMovement: true });
@@ -969,7 +1020,7 @@ export class Game {
     this.keys.clear();
     this.mouseDown = false;
     this.rightDown = false;
-    this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen ? 'none' : 'flex';
+    this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen || this.teamMenuOpen ? 'none' : 'flex';
   }
 
   private onLockChange = () => {
@@ -979,7 +1030,7 @@ export class Game {
       this.wrap.classList.remove('softlock');
     }
     if (!l && !this.softLock) {
-      this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen || this.st?.ph === 'vote' ? 'none' : 'flex';
+      this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen || this.teamMenuOpen || this.st?.ph === 'vote' ? 'none' : 'flex';
       this.keys.clear();
       this.mouseDown = false;
       this.rightDown = false;
@@ -1051,12 +1102,14 @@ export class Game {
   private onKeyDown = (e: KeyboardEvent) => {
     if (this.hud.chatOpen) return;
     const code = e.code;
-    if (code === 'Tab') {
+    // Tab браузер использует для перехода по полям — в игре он не нужен
+    if (code === 'Tab') e.preventDefault();
+    if (this.bound(code, 'scoreboard')) {
       e.preventDefault();
       this.boardOpen = true;
       return;
     }
-    if (code === 'Enter' || code === 'KeyT' || code === 'KeyY') {
+    if (this.bound(code, 'chat')) {
       e.preventDefault();
       this.hud.openChat();
       if (this.realLocked()) document.exitPointerLock();
@@ -1067,7 +1120,20 @@ export class Game {
       if (m) this.castVote(m.id);
       return;
     }
-    if (code === 'KeyB') {
+    // в открытых меню цифры выбирают пункт, а не оружие
+    if (this.teamMenuOpen && (code === 'Digit1' || code === 'Digit2')) {
+      this.chooseTeam(code === 'Digit1' ? 0 : 1);
+      return;
+    }
+    if (this.teamMenuOpen && code === 'Escape') {
+      this.toggleTeamMenu();
+      return;
+    }
+    if (this.bound(code, 'team')) {
+      this.toggleTeamMenu();
+      return;
+    }
+    if (this.bound(code, 'buy')) {
       this.toggleBuy();
       return;
     }
@@ -1089,19 +1155,125 @@ export class Game {
     // во время игры сочетания с Ctrl не должны открывать окна браузера (сохранить, закладка, поиск…);
     // Ctrl+W/N/T браузер так не отдаёт — от них защищает полный экран и подтверждение закрытия
     if (e.ctrlKey || code === 'ControlLeft' || code === 'ControlRight') e.preventDefault();
-    if (code === 'Digit1') this.selectSlot(SLOT_PRIMARY);
-    if (code === 'Digit2') this.selectSlot(SLOT_PISTOL);
-    if (code === 'Digit3') this.selectSlot(SLOT_KNIFE);
-    if (code === 'KeyQ') this.selectSlot(this.lastSlot);
-    if (code === 'Digit4') this.cycleGrenade();
+    if (this.bound(code, 'primary')) this.selectSlot(SLOT_PRIMARY);
+    if (this.bound(code, 'pistol')) this.selectSlot(SLOT_PISTOL);
+    if (this.bound(code, 'knife')) this.selectSlot(SLOT_KNIFE);
+    if (this.bound(code, 'lastWeapon')) this.selectSlot(this.lastSlot);
+    if (this.bound(code, 'grenade')) this.cycleGrenade();
+    // пробел и прочие клавиши не должны прокручивать страницу
+    if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
     this.keys.add(code);
     this.tapped.add(code);
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
-    if (e.code === 'Tab') this.boardOpen = false;
+    if (this.bound(e.code, 'scoreboard')) this.boardOpen = false;
     this.keys.delete(e.code);
   };
+
+  // ---------- Ники над головами ----------
+
+  private nameTagLayer: HTMLDivElement | null = null;
+  private nameTags = new Map<number, HTMLDivElement>();
+  private tagPos = new THREE.Vector3();
+
+  /**
+   * Ник над головой у живых союзников (у наблюдателя — у всех, цветом стороны).
+   * Союзники и так всегда приходят в снапшотах, поэтому ник виден и через стены, как на радаре.
+   */
+  private updateNameTags() {
+    if (!this.nameTagLayer) {
+      this.nameTagLayer = document.createElement('div');
+      this.nameTagLayer.className = 'name-tags';
+      this.wrap.appendChild(this.nameTagLayer);
+    }
+    const seen = new Set<number>();
+    const cam = this.camera;
+    const w = this.wrap.clientWidth,
+      h = this.wrap.clientHeight;
+    const spectating = this.spectator || this.myTeam < 0;
+    for (const p of this.players.values()) {
+      const info = this.pub(p.id);
+      if (!info || p.dead || !info.a || p.id === this.myId) continue;
+      if (!spectating && info.t !== this.myTeam) continue;
+      // за кем наблюдаем от первого лица — тому ник не нужен
+      if (!this.predAlive && p.id === this.specTarget) continue;
+      if (!p.body?.group.visible) continue;
+      const [x, y, z] = p.renderPos;
+      this.tagPos.set(x, y + (p.renderCrouch ? 1.6 : 2.1), z);
+      const dist = this.tagPos.distanceTo(cam.position);
+      if (dist > 60) continue;
+      this.tagPos.project(cam);
+      if (this.tagPos.z > 1 || Math.abs(this.tagPos.x) > 1.1 || Math.abs(this.tagPos.y) > 1.1) continue;
+      let el = this.nameTags.get(p.id);
+      if (!el) {
+        el = document.createElement('div');
+        this.nameTagLayer.appendChild(el);
+        this.nameTags.set(p.id, el);
+      }
+      const text = info.n + (info.hp >= 0 && info.hp < 100 ? ` · ${info.hp}` : '');
+      if (el.textContent !== text) el.textContent = text;
+      el.className = 'name-tag team' + info.t + (info.b ? ' bot' : '');
+      el.style.transform = `translate(${((this.tagPos.x + 1) / 2) * w}px, ${((1 - this.tagPos.y) / 2) * h}px) translate(-50%, -100%)`;
+      // дальше — мельче и прозрачнее
+      el.style.opacity = String(Math.max(0.45, 1 - dist / 70));
+      el.style.fontSize = `${Math.max(10, 14 - dist * 0.08)}px`;
+      seen.add(p.id);
+    }
+    for (const [id, el] of this.nameTags)
+      if (!seen.has(id)) {
+        el.remove();
+        this.nameTags.delete(id);
+      }
+  }
+
+  // ---------- Смена команды (M) ----------
+
+  private teamMenuOpen = false;
+  private teamMenuEl: HTMLDivElement | null = null;
+
+  private toggleTeamMenu() {
+    this.teamMenuOpen = !this.teamMenuOpen;
+    if (this.buyOpen && this.teamMenuOpen) this.toggleBuy();
+    if (!this.teamMenuOpen) {
+      this.teamMenuEl?.remove();
+      this.teamMenuEl = null;
+      this.lock();
+      return;
+    }
+    this.softLock = false;
+    if (this.realLocked()) document.exitPointerLock();
+    this.pauseEl.style.display = 'none';
+    const el = document.createElement('div');
+    el.className = 'pause team-menu';
+    const box = document.createElement('div');
+    box.className = 'pause-box';
+    const h = document.createElement('h2');
+    h.textContent = 'ВЫБОР КОМАНДЫ';
+    box.append(h);
+    for (const t of [0, 1]) {
+      const pl = this.st?.pl.filter((p) => p.t === t) ?? [];
+      const humans = pl.filter((p) => !p.b).length;
+      const b = document.createElement('button');
+      b.className = 'btn team-choice team' + t + (t === this.myTeam ? ' current' : '');
+      b.textContent = `${t + 1} · ${TEAM_LABEL[t]} — людей ${humans}, ботов ${pl.length - humans}${t === this.myTeam ? ' (сейчас)' : ''}`;
+      b.disabled = t === this.myTeam || pl.length - humans === 0;
+      b.onclick = () => this.chooseTeam(t);
+      box.append(b);
+    }
+    const hint = document.createElement('div');
+    hint.className = 'pause-hint';
+    hint.textContent = 'Место займёте у бота этой команды. Если вы живы и идёт раунд — переход в начале следующего. Убийства и деньги сохраняются. M или Esc — закрыть.';
+    box.append(hint);
+    el.append(box);
+    this.wrap.append(el);
+    this.teamMenuEl = el;
+  }
+
+  private chooseTeam(t: number) {
+    this.sendJson({ t: 'team', team: t });
+    if (this.teamMenuOpen) this.toggleTeamMenu();
+  }
 
   private toggleBuy() {
     this.buyOpen = !this.buyOpen;
@@ -1119,7 +1291,7 @@ export class Game {
 
   /** 4 — по кругу между гранатами, которые есть. */
   private cycleGrenade() {
-    const have = [3, 4, 5].filter((s) => this.nades[s - 3] > 0);
+    const have = [3, 4, 5, 6].filter((s) => this.nades[s - 3] > 0);
     if (!have.length) return;
     const i = have.indexOf(this.slot);
     this.selectSlot(have[(i + 1) % have.length]);
@@ -1154,16 +1326,16 @@ export class Game {
   private buttons(): number {
     if (this.hud.chatOpen || !this.locked()) return 0;
     let b = 0;
-    const k = { has: (c: string) => this.keys.has(c) || this.tapped.has(c) };
-    if (k.has('KeyW') || k.has('ArrowUp')) b |= BTN_FWD;
-    if (k.has('KeyS') || k.has('ArrowDown')) b |= BTN_BACK;
-    if (k.has('KeyA') || k.has('ArrowLeft')) b |= BTN_LEFT;
-    if (k.has('KeyD') || k.has('ArrowRight')) b |= BTN_RIGHT;
-    if (k.has('Space')) b |= BTN_JUMP;
-    if (k.has('KeyC') || k.has('ControlLeft') || k.has('ControlRight')) b |= BTN_CROUCH;
-    if (k.has('KeyE')) b |= BTN_USE;
-    if (k.has('KeyR')) b |= BTN_RELOAD;
-    if (k.has('KeyG')) b |= BTN_DROP;
+    // клавиши — по настройкам управления (Настройки → Управление)
+    if (this.held('forward')) b |= BTN_FWD;
+    if (this.held('back')) b |= BTN_BACK;
+    if (this.held('left')) b |= BTN_LEFT;
+    if (this.held('right')) b |= BTN_RIGHT;
+    if (this.held('jump')) b |= BTN_JUMP;
+    if (this.held('crouch')) b |= BTN_CROUCH;
+    if (this.held('use')) b |= BTN_USE;
+    if (this.held('reload')) b |= BTN_RELOAD;
+    if (this.held('drop')) b |= BTN_DROP;
     if (this.mouseDown || this.fireTap) b |= BTN_FIRE;
     return b;
   }
@@ -1328,10 +1500,12 @@ export class Game {
     const now = nowMs / 1000;
     this.updatePlayers(dt);
     this.updateCamera(alpha);
+    this.updateNameTags();
     this.debris.update(dt);
     this.mapRenderer.flush();
     this.nadeView.update(dt);
     this.smokeView.update(now);
+    this.fireView.update(now);
     this.dropsView.sync(this.st?.drops ?? [], now);
     this.tracers.update(dt);
     this.updateBomb(now);
@@ -1442,6 +1616,7 @@ export class Game {
       body.group.visible = p.id !== this.specTarget || this.predAlive;
       const kind = WEAPONS[b.weapon]?.kind ?? 'pistol';
       const an = p.anim.update(dt, { x, y, z, yaw, crouch, onGround: (b.flags & SF_ONGROUND) !== 0, reloading: (b.flags & SF_RELOADING) !== 0, weaponKind: kind });
+      applyFore(an, WEAPONS[b.weapon]?.key);
       computePose(x, y, z, yaw, pitch, crouch, body.pose, an);
       body.applyPose(body.pose, an);
       body.setWeapon(kind, WEAPONS[b.weapon]?.key);
@@ -1551,7 +1726,7 @@ export class Game {
     if (own && own.present) {
       this.hud.setVitals(own.hp, own.armor, alive);
       const def = WEAPONS[own.weapon];
-      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot, this.nades, this.hasKit), (own.flags & SF_RELOADING) !== 0);
+      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot, this.nades, this.hasKit, this.myTeam), (own.flags & SF_RELOADING) !== 0);
       // прогресс закладки/обезвреживания
       if (own.flags & SF_USING && alive) {
         const isT = this.myTeam === 0;

@@ -26,6 +26,23 @@ export function buildGun(def: WeaponDef, tint: number): THREE.Group {
   const wood = new THREE.Color(0x7a5230).multiply(t).getHex();
   switch (def.kind) {
     case 'grenade': {
+      if (def.key === 'molotov') {
+        // бутылка: тёмное стекло, горлышко и горящая тряпка
+        g.add(box(0.075, 0.14, 0.075, 0x4a6a2a, 0, 0.03, -0.04));
+        g.add(box(0.035, 0.07, 0.035, 0x3e5a24, 0, 0.13, -0.04));
+        g.add(box(0.045, 0.05, 0.045, 0xd8c8a0, 0, 0.18, -0.04));
+        const flame = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.08, 0.05), new THREE.MeshBasicMaterial({ color: 0xffa02a, toneMapped: false }));
+        flame.position.set(0, 0.24, -0.04);
+        g.add(flame);
+        break;
+      }
+      if (def.key === 'incgrenade') {
+        // зажигательная граната: серый цилиндр с красной полосой
+        g.add(box(0.07, 0.12, 0.07, 0x7a7d80, 0, 0.03, -0.04));
+        g.add(box(0.072, 0.02, 0.072, 0xc0352a, 0, 0.05, -0.04));
+        g.add(box(0.04, 0.03, 0.04, 0x555555, 0, 0.105, -0.04));
+        break;
+      }
       const body = def.key === 'he' ? 0x4f6b32 : def.key === 'flash' ? 0x9aa0a6 : 0xd9d9d4;
       g.add(box(0.07, 0.1, 0.07, body, 0, 0.02, -0.04));
       g.add(box(0.04, 0.03, 0.04, 0x555555, 0, 0.085, -0.04));

@@ -1,6 +1,6 @@
 // Стенд оружия (только для разработки): http://127.0.0.1:5173/weapons.html — модели так, как их видит игра;
 // ?only=Pistol_02,Pistol_03 — исходники пака (для замера точек хвата)
-// Модели из public/models/_candidates: вид сбоку, дуло вправо (−Z), линейка по 10% длины
+// Исходники из public/models/weapons: вид сбоку, дуло вправо (−Z), линейка по 10% длины
 // (0 — затыльник/приклад слева, 100% — дуло справа) и по 10% высоты (0 — низ).
 
 import * as THREE from 'three';
@@ -12,7 +12,7 @@ const ALL = ['AssaultRifle_01', 'AssaultRifle_02', 'AssaultRifle_03', 'Pistol_01
 const only = new URLSearchParams(location.search).get('only');
 const NAMES = only ? only.split(',') : ALL;
 // ?game=1 — модели так, как их получает игра: дуло −Z, начало — в рукояти, точки хвата отмечены
-const GAME = !only; // по умолчанию — модели из игры; ?only=… — исходники из public/models/_candidates (скопировать вручную)
+const GAME = !only; // по умолчанию — модели из игры; ?only=… — исходники пака из public/models/weapons (без нормализации, для замера точек хвата)
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setClearColor(0xdbe8f0);
@@ -37,7 +37,9 @@ function line(a: THREE.Vector3, b: THREE.Vector3) {
 }
 
 if (GAME) {
-  const keys = ['osa', 'gyurza', 'shmel', 'molot', 'vikhr', 'sokol'];
+  const keys = ['osa', 'beretta', 'gyurza', 'python', 'sw29', 'mac10', 'skorpion', 'shmel', 'ump', 'molot', 'sawedoff', 'vikhr', 'm4a1', 'aug', 'sokol', 'awm'];
+  // две колонки по 8: слева пистолеты и ПП, справа дробовики, винтовки, снайперские
+  const at = (i: number) => new THREE.Vector3(0, 1.4 - (i % 8) * 0.38, i < 8 ? 0.75 : -0.75);
   loadGunModels();
   const dot = (color: number, p: THREE.Vector3, parent: THREE.Object3D) => {
     const m = new THREE.Mesh(new THREE.SphereGeometry(0.02), new THREE.MeshBasicMaterial({ color, depthTest: false }));
@@ -52,7 +54,7 @@ if (GAME) {
       const g = cloneGun(key)!;
       g.name = key;
       // ряды по 0,45 м, ось ствола — горизонтально
-      g.position.set(0, 1.1 - i * 0.45, 0);
+      g.position.copy(at(i));
       dot(0x22cc44, new THREE.Vector3(), g);
       if (gm.fore) dot(0x2266ff, gm.fore, g);
       dot(0xffcc00, gm.muzzle, g);
@@ -62,7 +64,7 @@ if (GAME) {
       label.style.cssText = 'position:fixed;font-weight:600;background:#fffc;padding:1px 4px';
       document.body.appendChild(label);
       labels.push(() => {
-        const v = new THREE.Vector3(0, 1.1 - i * 0.45 + 0.12, 0.45).project(camera);
+        const v = at(i).add(new THREE.Vector3(0, 0.13, 0.5)).project(camera);
         label.style.left = `${(v.x * 0.5 + 0.5) * innerWidth}px`;
         label.style.top = `${(-v.y * 0.5 + 0.5) * innerHeight}px`;
       });
@@ -81,11 +83,11 @@ if (GAME) {
     label.style.left = `${(v.x * 0.5 + 0.5) * innerWidth - label.offsetWidth}px`;
     label.style.top = `${(-v.y * 0.5 + 0.5) * innerHeight - 8}px`;
   });
-  new MTLLoader().setPath('/models/_candidates/').load(`${name}.mtl`, (mtl) => {
+  new MTLLoader().setPath('/models/weapons/').load(`${name}.mtl`, (mtl) => {
     mtl.preload();
     new OBJLoader()
       .setMaterials(mtl)
-      .setPath('/models/_candidates/')
+      .setPath('/models/weapons/')
       .load(`${name}.obj`, (obj) => {
         const box0 = new THREE.Box3().setFromObject(obj);
         const s0 = box0.getSize(new THREE.Vector3());
@@ -118,7 +120,7 @@ if (GAME) {
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
   const aspect = innerWidth / innerHeight;
-  const h = GAME ? 1.5 : (NAMES.length * ROW) / 2 + 0.5;
+  const h = GAME ? 1.7 : (NAMES.length * ROW) / 2 + 0.5;
   camera.left = -h * aspect;
   camera.right = h * aspect;
   camera.top = h;

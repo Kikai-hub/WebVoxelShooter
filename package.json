@@ -16,7 +16,9 @@
     "test:bots": "tsx tools/botmatch.ts",
     "test:duel": "tsx tools/duel.ts",
     "test:zones": "tsx tools/zones.ts",
-    "test:net": "tsx tools/netcheck.ts"
+    "test:net": "tsx tools/netcheck.ts",
+    "test:ranked": "tsx tools/ranked.ts",
+    "test:wingman": "tsx tools/wingman.ts"
   },
   "engines": {
     "node": ">=22"

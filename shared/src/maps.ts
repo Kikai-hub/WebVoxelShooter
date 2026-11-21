@@ -4,6 +4,7 @@
 import { Rng } from './rng';
 import { FLOOR, MAT, VoxelMap, archX, buildMarketSquare, crate, palm, wall, type MapInfo, type Rect } from './map';
 import { buildCaravanserai, buildMedina } from './maps2';
+import { buildWmAlleys, buildWmCaravan, buildWmMarket } from './maps3';
 
 /** Скала из столбиков разной высоты (детерминированно по зерну). */
 function rock(m: VoxelMap, rng: Rng, x0: number, z0: number, x1: number, z1: number, hMin: number, hMax: number, mat: number = MAT.ROCK) {
@@ -256,6 +257,9 @@ export const MAPS: Record<string, () => MapInfo> = {
   quarter: buildOldQuarter,
   caravan: buildCaravanserai,
   medina: buildMedina,
+  wm_market: buildWmMarket,
+  wm_alleys: buildWmAlleys,
+  wm_caravan: buildWmCaravan,
 };
 
 export const MAP_LIST = [
@@ -265,3 +269,15 @@ export const MAP_LIST = [
   { id: 'caravan', name: 'Караван-сарай', desc: 'Большая: галерея, туннель, двор с колодцем' },
   { id: 'medina', name: 'Медина', desc: 'Большая: переулок, крытый базар, длинная улица' },
 ];
+
+/** Карты союзников 2×2: меньше, одна точка A. В голосовании паблика их нет. */
+export const WM_MAP_LIST = [
+  { id: 'wm_market', name: 'Рынок', desc: 'Площадь, арка, проходной дом, помост на точке' },
+  { id: 'wm_alleys', name: 'Переулки', desc: 'Тесно: дом, задний двор, улица и крыша' },
+  { id: 'wm_caravan', name: 'Караван', desc: 'Туннель, ворота во двор, галерея с настилом' },
+];
+
+/** Название любой карты по id. */
+export function mapName(id: string): string {
+  return [...MAP_LIST, ...WM_MAP_LIST].find((m) => m.id === id)?.name ?? id;
+}

@@ -12,6 +12,7 @@ import {
   WEAPONS,
   zoneName,
   MAP_LIST,
+  mapName,
   forTeam,
   nadeWeapon,
   overtimeOf,
@@ -21,6 +22,7 @@ import {
   type RoomState,
 } from '../../../shared/src/index';
 import { MAT_COLORS } from './atlas';
+import { weaponIcon } from './weaponIcons';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', parent?: HTMLElement, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -198,20 +200,14 @@ export class Hud {
         let col = MAT_COLORS[top] ?? 0x888888;
         let k = h > 1 ? 0.55 + Math.min(h, 12) * 0.02 : h === 1 ? 0.75 : 0.95;
         if (top === MAT.SITE) k = 1;
-        // ось z карты идёт на север, на миникарте север сверху
-        const o = ((m.sz - 1 - z) * m.sx + x) * 4;
+        // строка картинки = z, столбец = x (поворот и отражение — при выводе в drawMinimap)
+        const o = (z * m.sx + x) * 4;
         img.data[o] = ((col >> 16) & 255) * k;
         img.data[o + 1] = ((col >> 8) & 255) * k;
         img.data[o + 2] = (col & 255) * k;
         img.data[o + 3] = 255;
       }
     g.putImageData(img, 0, 0);
-    // буквы точек
-    g.fillStyle = '#fff';
-    g.font = 'bold 10px sans-serif';
-    this.mapInfo.sites.forEach((s, i) => {
-      g.fillText(this.mapInfo.siteNames[i], ((s.x0 + s.x1) / 2) * 2 - 3, (this.mapInfo.map.depth - (s.z0 + s.z1) / 2) * 2 + 4);
-    });
     return c;
   }
 
@@ -324,10 +320,21 @@ export class Hud {
     }
   }
 
-  killFeed(killer: string, kTeam: number, victim: string, vTeam: number, weapon: string, hs: boolean, ex: boolean, mine: boolean) {
+  /** Строка ленты: убийца · силуэт оружия · значок попадания в голову · жертва. */
+  killFeed(killer: string, kTeam: number, victim: string, vTeam: number, weapon: { key: string; name: string } | null, hs: boolean, ex: boolean, mine: boolean) {
     const row = el('div', 'kf' + (mine ? ' mine' : ''), this.feed);
-    el('span', 'team' + kTeam, row, killer);
-    el('span', 'kf-w', row, ` [${weapon}${hs ? (ex ? ' 💥' : ' ⦿') : ''}] `);
+    if (killer) el('span', 'team' + kTeam, row, killer);
+    const icon = (key: string, title: string) => {
+      const url = weaponIcon(key);
+      if (url) {
+        const img = el('img', 'kf-icon kf-' + key, row) as HTMLImageElement;
+        img.src = url;
+        img.alt = title;
+        img.title = title;
+      } else el('span', 'kf-w', row, title);
+    };
+    icon(weapon ? weapon.key : 'bomb', weapon ? weapon.name : 'Взрыв бомбы');
+    if (hs) icon(ex ? 'explode' : 'headshot', ex ? 'Голова вдребезги' : 'В голову');
     el('span', 'team' + vTeam, row, victim);
     while (this.feed.children.length > 6) this.feed.firstChild!.remove();
     setTimeout(() => row.remove(), 7000);
@@ -375,12 +382,35 @@ export class Hud {
     g.clip();
     g.fillStyle = '#1b1712';
     g.fillRect(0, 0, W, W);
-    g.translate(W / 2, W / 2);
-    g.rotate(Math.PI - yaw);
+    // Миникарта повёрнута по взгляду: вперёд — вверх, вправо — вправо, как на экране.
+    // В мире «вперёд» = (−sin yaw, −cos yaw), «вправо» = (cos yaw, −sin yaw) по (x, z), поэтому
+    // экран: sx = dx·cos − dz·sin, sy = dx·sin + dz·cos (ось y экрана — вниз). Раньше карта
+    // рисовалась «восток справа», а в игре при взгляде на север восток слева — отсюда было зеркало.
+    const cs = Math.cos(yaw),
+      sn = Math.sin(yaw);
+    const toMap = (x: number, z: number): [number, number] => {
+      const dx = x - px,
+        dz = z - pz;
+      return [W / 2 + (dx * cs - dz * sn) * scale, W / 2 + (dx * sn + dz * cs) * scale];
+    };
+    g.save();
+    g.setTransform(cs * scale, sn * scale, -sn * scale, cs * scale, W / 2, W / 2);
     g.imageSmoothingEnabled = false;
-    // карта: 1 пиксель изображения = 0,5 м
-    g.drawImage(this.mapImg, -px * scale, -(this.mapInfo.map.depth - pz) * scale, this.mapImg.width * 2, this.mapImg.height * 2);
-    const toMap = (x: number, z: number): [number, number] => [(x - px) * scale, -(z - pz) * scale];
+    // картинка в метрах: 1 пиксель = 0,5 м, начало — угол карты (x = 0, z = 0)
+    g.drawImage(this.mapImg, -px, -pz, this.mapImg.width / 2, this.mapImg.height / 2);
+    g.restore();
+    // буквы точек — без поворота, чтобы читались
+    g.fillStyle = '#fff';
+    g.font = 'bold 12px sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    this.mapInfo.sites.forEach((s, i) => {
+      if (i > 0 && this.mapInfo.oneSite) return;
+      const [sx, sy] = toMap((s.x0 + s.x1) / 2, (s.z0 + s.z1) / 2);
+      g.fillText(this.mapInfo.siteNames[i], sx, sy);
+    });
+    g.textAlign = 'start';
+    g.textBaseline = 'alphabetic';
     if (bomb) {
       const [bx, by] = toMap(bomb.x, bomb.z);
       g.fillStyle = bomb.planted ? '#ff3030' : '#ffb020';
@@ -413,8 +443,9 @@ export class Hud {
     this.board.style.display = show ? 'block' : 'none';
     if (!show || !st) return;
     this.board.innerHTML = '';
-    const ot = overtimeOf(st.rn);
-    el('div', 'board-title', this.board, `${ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · ` : ''}Раунд ${st.rn} · до ${winTarget(st.rn)} побед · ${MAP_LIST.find((m) => m.id === st.map)?.name ?? st.map} · наблюдателей: ${st.spec}`);
+    const ot = overtimeOf(st.rn, st.hl);
+    const modeName = st.mode === 'mm' ? 'Матчмейкинг · ' : st.mode === 'wm' ? 'Союзники · ' : '';
+    el('div', 'board-title', this.board, `${modeName}${ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · ` : ''}Раунд ${st.rn} · до ${winTarget(st.rn, st.hl)} побед · ${mapName(st.map)} · наблюдателей: ${st.spec}`);
     for (const team of [0, 1]) {
       const sec = el('div', 'board-team team' + team, this.board);
       el('div', 'board-head', sec, `${TEAM_LABEL[team]} — ${st.sc[team]}`);

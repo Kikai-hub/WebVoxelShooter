@@ -37,6 +37,25 @@ export interface AccountInfo {
   loadout: Loadout;
   settings: Settings;
   created: number;
+  ratings?: {
+    mm: { elo: number; level: number; color: string; matches: number; wins: number };
+    wm: { rank: number | null; name: string; matches: number; wins: number };
+  };
+}
+export type RankedMode = 'mm' | 'wm';
+export interface QueueState {
+  state: 'idle' | 'searching' | 'found';
+  mode?: RankedMode;
+  wait?: number;
+  count?: number;
+  need?: number;
+  full?: boolean;
+}
+export interface ServerStatus {
+  rooms: number;
+  maxRooms: number;
+  online: number;
+  queue: { mm: number; wm: number };
 }
 
 const KEY = 'vts_token';
@@ -95,5 +114,8 @@ export const api = {
   saveSettings: (settings: Settings) => call<{ settings: Settings }>('PUT', 'settings', { settings }),
   stats: () => call<{ stats: PlayerStats }>('GET', 'stats'),
   news: () =>call<{ version: { commit: string; date: string }; news: Array<{ date: string; title: string; items: string[] }> }>('GET', 'news'),
-  status: () =>call<{ humans: number; bots: number; spectators: number; phase: string; round: number; score: [number, number]; map: string; mapId: string }>('GET', 'status'),
+  status: () => call<ServerStatus>('GET', 'status'),
+  queueJoin: (mode: RankedMode) => call<QueueState>('POST', 'queue', { mode }),
+  queueState: () => call<QueueState>('GET', 'queue'),
+  queueLeave: () => call<QueueState>('DELETE', 'queue'),
 };

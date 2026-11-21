@@ -39,23 +39,29 @@ export const REGULATION_ROUNDS = HALF_ROUNDS * 2;
 export const OT_ROUNDS = 4;
 export const OT_MONEY = 10000;
 
+/** Союзники (2×2): 16 раундов, смена сторон после 8-го, побеждает первый, кто взял 9. Раунд короче. */
+export const WINGMAN_HALF = 8;
+export const WINGMAN_ROUND_TIME = 90;
+
+// Правила ниже зависят от длины половины half: 12 — обычный матч 5×5, 8 — союзники 2×2.
+
 /** Сколько побед нужно для победы в матче, если сейчас идёт раунд round (с 1). */
-export function winTarget(round: number): number {
-  if (round <= REGULATION_ROUNDS) return WIN_ROUNDS;
-  // каждый овертайм начинается с ничьей: 12:12, 14:14, 16:16… — нужно взять 3 из 4
-  const block = Math.floor((round - REGULATION_ROUNDS - 1) / OT_ROUNDS);
-  return HALF_ROUNDS + (OT_ROUNDS / 2) * block + OT_ROUNDS / 2 + 1;
+export function winTarget(round: number, half = HALF_ROUNDS): number {
+  if (round <= half * 2) return half + 1;
+  // каждый овертайм начинается с ничьей (12:12, 14:14… или 8:8, 10:10…) — нужно взять 3 из 4
+  const block = Math.floor((round - half * 2 - 1) / OT_ROUNDS);
+  return half + (OT_ROUNDS / 2) * block + OT_ROUNDS / 2 + 1;
 }
 
-/** Меняются ли стороны перед раундом round: после 12-го и в начале каждой половины овертайма. */
-export function swapsSidesBefore(round: number): boolean {
-  if (round === HALF_ROUNDS + 1) return true;
-  return round > REGULATION_ROUNDS && (round - REGULATION_ROUNDS - 1) % (OT_ROUNDS / 2) === 0;
+/** Меняются ли стороны перед раундом round: после половины и в начале каждой половины овертайма. */
+export function swapsSidesBefore(round: number, half = HALF_ROUNDS): boolean {
+  if (round === half + 1) return true;
+  return round > half * 2 && (round - half * 2 - 1) % (OT_ROUNDS / 2) === 0;
 }
 
 /** Номер овертайма (1, 2…) для раунда round или 0 в основное время. */
-export function overtimeOf(round: number): number {
-  return round <= REGULATION_ROUNDS ? 0 : Math.floor((round - REGULATION_ROUNDS - 1) / OT_ROUNDS) + 1;
+export function overtimeOf(round: number, half = HALF_ROUNDS): number {
+  return round <= half * 2 ? 0 : Math.floor((round - half * 2 - 1) / OT_ROUNDS) + 1;
 }
 export const RECONNECT_HOLD = 60;
 

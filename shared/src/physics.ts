@@ -117,7 +117,8 @@ export function stepPlayer(s: PState, buttons: number, yaw: number, map: VoxelMa
       s.vz += acc * wz;
     }
   }
-  if (canMove && buttons & BTN_JUMP && s.onGround && !s.crouch) {
+  // во время закладки/обезвреживания (E на земле) прыгать нельзя
+  if (canMove && buttons & BTN_JUMP && s.onGround && !s.crouch && !(buttons & BTN_USE)) {
     s.vy = JUMP_VELOCITY;
     s.onGround = false;
   }

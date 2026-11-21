@@ -93,6 +93,8 @@ export interface MapInfo {
   zones: Array<{ name: string; r: Rect }>;
   /** Расстановка ботов защиты: 0 — точка A, 1 — точка B, 2 — центр. По умолчанию 2+2+1. */
   ctRoles?: number[];
+  /** одна точка (карты союзников): sites[0] и sites[1] — одна и та же площадка */
+  oneSite?: boolean;
 }
 
 export const FLOOR = 0.5; // верх пола в метрах

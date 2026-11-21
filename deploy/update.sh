@@ -53,8 +53,8 @@ if [ -n "$game_id" ] && [ "$(docker inspect -f '{{.State.Running}}' "$game_id" 2
   log "Комната закроется после текущего матча (сразу, если людей нет)…"
   docker compose exec -T game node -e "fetch('http://127.0.0.1:8080/api/admin',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({secret:process.env.ADMIN_SECRET,cmd:'drain'})}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
     || log "Не удалось отправить drain — перезапуск без ожидания"
-  # ждём, пока процесс игры завершится (не дольше 30 минут)
-  for _ in $(seq 1 360); do
+  # ждём, пока закончатся матчи и процесс игры завершится (не дольше 60 минут: рейтинговый 5×5 может идти долго)
+  for _ in $(seq 1 720); do
     state="$(docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' "$game_id" 2>/dev/null || echo 'false -')"
     [ "$state" != "true $started" ] && break
     sleep 5

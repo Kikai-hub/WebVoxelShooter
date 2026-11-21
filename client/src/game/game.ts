@@ -40,7 +40,8 @@ import {
   type Action,
   type Binds,
   OT_MONEY,
-  REGULATION_ROUNDS,
+  HALF_ROUNDS,
+  type GameMode,
   overtimeOf,
   swapsSidesBefore,
   winTarget,
@@ -213,12 +214,18 @@ export class Game {
   private wasReloading = false;
   private connected = false;
   private closedMsg = '';
+  private useSlot: number | null = null;
+  /** итог рейтингового матча — покажем в меню */
+  private resultMsg = '';
+  /** сервер закрыл комнату — не переподключаемся */
+  private ended = false;
 
   constructor(
     private container: HTMLElement,
     private account: AccountInfo,
     private onExit: (msg?: string) => void,
     mapId = 'market',
+    private mode: GameMode = 'public',
   ) {
     this.settings = { ...account.settings };
     this.info = (MAPS[mapId] ?? MAPS.market)();
@@ -435,7 +442,7 @@ export class Game {
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
-      ws.send(JSON.stringify({ t: 'auth', token: getToken() }));
+      ws.send(JSON.stringify({ t: 'auth', token: getToken(), mode: this.mode }));
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
@@ -451,7 +458,7 @@ export class Game {
     };
     ws.onclose = () => {
       this.connected = false;
-      if (this.running) {
+      if (this.running && !this.ended) {
         this.hud.showCenter('Соединение потеряно', this.closedMsg || 'Переподключение…', 3);
         if (!this.closedMsg) setTimeout(() => this.running && this.connect(), 2000);
       }
@@ -511,8 +518,21 @@ export class Game {
         break;
       case 'kick':
         this.closedMsg = m.msg;
-        this.hud.showCenter(m.msg, '', 10);
+        this.hud.showCenter(m.msg, this.resultMsg, 10);
+        // комната закрыта (матч окончен, отменён, нет мест) — обратно в меню
+        if (m.end) this.ended = true;
+        if (m.end) setTimeout(() => this.running && this.exit(), this.resultMsg ? 2500 : 4000);
         break;
+      case 'rating': {
+        const sign = m.delta > 0 ? '+' : '';
+        this.resultMsg =
+          m.mode === 'mm'
+            ? `${m.won ? 'Победа' : 'Поражение'}: ${sign}${m.delta} Elo · ${m.elo} Elo · ${m.rank}`
+            : `${m.won ? 'Победа' : 'Поражение'} · Союзники: ${m.rank}` + (m.promo ? ` · ${m.promo}` : '');
+        this.hud.info(this.resultMsg);
+        this.hud.showCenter(m.won ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ', this.resultMsg, 15, performance.now() / 1000, m.won ? '' : 'warn');
+        break;
+      }
       case 'err':
         this.hud.info(m.msg);
         break;
@@ -726,9 +746,10 @@ export class Game {
         }
         const k = this.pub(e.k),
           v = this.pub(e.v);
-        this.hud.killFeed(k ? k.n : 'мир', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, WEAPONS[e.w]?.name ?? '', e.hs, e.ex, e.k === this.myId || e.v === this.myId);
-        // «Headshot» — только тому, кто убил в голову
-        if (e.k === this.myId && e.hs) this.sfx.announce('headshot');
+        const wd = k ? WEAPONS[e.w] : null;
+        this.hud.killFeed(k ? k.n : '', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, wd ? { key: wd.key, name: wd.name } : null, e.hs, e.ex, e.k === this.myId || e.v === this.myId);
+        // «Headshot» — только тому, кто убил в голову; в рейтинговых режимах комментатора нет
+        if (e.k === this.myId && e.hs && this.publicMode) this.sfx.announce('headshot');
         if (e.k === this.myId) {
           this.sfx.hit(e.hs);
           this.hud.hitMarker(now);
@@ -777,9 +798,10 @@ export class Game {
         this.buyOpen = false;
         this.hud.showBuy(false, 0, false);
         {
-          const ot = overtimeOf(e.rn);
-          const title = ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · раунд ${e.rn}` : e.rn === REGULATION_ROUNDS ? `Раунд ${e.rn} — последний` : `Раунд ${e.rn}`;
-          this.hud.showCenter(title, ot && swapsSidesBefore(e.rn) ? `До ${winTarget(e.rn)} побед · у всех $${OT_MONEY}` : 'Заморозка: покупка на B', 3, now, ot ? 'warn' : '');
+          const hl = this.st?.hl ?? HALF_ROUNDS;
+          const ot = overtimeOf(e.rn, hl);
+          const title = ot ? `Овертайм${ot > 1 ? ' ' + ot : ''} · раунд ${e.rn}` : e.rn === hl * 2 ? `Раунд ${e.rn} — последний` : `Раунд ${e.rn}`;
+          this.hud.showCenter(title, ot && swapsSidesBefore(e.rn, hl) ? `До ${winTarget(e.rn, hl)} побед · у всех $${OT_MONEY}` : 'Заморозка: покупка на B', 3, now, ot ? 'warn' : '');
         }
         this.specTarget = -1;
         break;
@@ -860,6 +882,7 @@ export class Game {
         break;
       }
       case 'announce': {
+        if (!this.publicMode) break;
         const who = this.pub(e.s);
         const label = { firstblood: 'First Blood', doublekill: 'Double Kill', triplekill: 'Triple Kill', megakill: 'Mega Kill', rampage: 'Rampage' }[e.kind];
         this.sfx.announce(e.kind);
@@ -1362,6 +1385,11 @@ export class Game {
   private clientTick() {
     const buttons = this.buttons();
     const viewTick = this.serverTickNow() - INTERP_DELAY * TICK_RATE;
+    // закладка/обезвреживание: оружие не меняется (сервер всё равно не даст)
+    if (this.usingNow) {
+      this.useSlot ??= this.slot;
+      this.slot = this.useSlot;
+    } else this.useSlot = null;
     const cmd: UserCmd = { seq: ++this.seq, buttons, yaw: this.yaw, pitch: this.pitch, slot: this.slot, viewTick };
     if (this.predAlive) {
       copyPState(this.prevPred, this.pred);
@@ -1548,6 +1576,13 @@ export class Game {
     const scoped = this.isScoped();
     this.camera.fov = scoped ? 20 : this.settings.fov * 0.75;
     this.camera.updateProjectionMatrix();
+    // закладка/обезвреживание: свои (или того, за кем смотрим) руки у бомбы
+    {
+      const flags = spec ? spec.p.snaps[spec.p.snaps.length - 1]?.flags ?? 0 : this.own?.flags ?? 0;
+      const team = spec ? spec.team : this.myTeam;
+      const alive = spec ? true : this.predAlive;
+      this.vm.setUse(alive && flags & SF_USING ? (team === 0 ? 'plant' : 'defuse') : null);
+    }
     if (spec) this.vm.update(dt, spec.p.renderSpeed, w / h, true, false);
     else this.vm.update(dt, this.pred.onGround ? speed : 0, w / h, this.predAlive, scoped);
     this.wrap.classList.toggle('scoped', scoped);
@@ -1651,11 +1686,15 @@ export class Game {
       if (!body) continue;
       body.group.visible = p.id !== this.specTarget || this.predAlive;
       const kind = WEAPONS[b.weapon]?.kind ?? 'pistol';
-      const an = p.anim.update(dt, { x, y, z, yaw, crouch, onGround: (b.flags & SF_ONGROUND) !== 0, reloading: (b.flags & SF_RELOADING) !== 0, weaponKind: kind });
+      const using = (b.flags & SF_USING) !== 0 && (b.flags & SF_ONGROUND) !== 0;
+      const an = p.anim.update(dt, { x, y, z, yaw, crouch, onGround: (b.flags & SF_ONGROUND) !== 0, reloading: (b.flags & SF_RELOADING) !== 0, weaponKind: kind, using });
       applyFore(an, WEAPONS[b.weapon]?.key);
       computePose(x, y, z, yaw, pitch, crouch, body.pose, an);
       body.applyPose(body.pose, an);
-      body.setWeapon(kind, WEAPONS[b.weapon]?.key);
+      // закладка — в руках бомба, обезвреживание — руки пустые (бомба уже на земле)
+      const team = this.pub(p.id)?.t ?? 0;
+      if (an.use > 0.5) body.setWeapon(team === 0 ? 'bomb' : 'none');
+      else body.setWeapon(kind, WEAPONS[b.weapon]?.key);
       // шаги
       const sp = Math.hypot(x - p.lastPos[0], z - p.lastPos[2]) / Math.max(dt, 1e-3);
       p.renderSpeed = p.renderSpeed * 0.8 + Math.min(sp, 12) * 0.2;
@@ -1855,9 +1894,19 @@ export class Game {
     return body;
   }
 
+  /** свой игрок сейчас закладывает или обезвреживает бомбу */
+  private get usingNow(): boolean {
+    return this.predAlive && !!this.own && (this.own.flags & SF_USING) !== 0 && this.held('use');
+  }
+
+  /** паблик (с комментатором) или рейтинговый режим */
+  private get publicMode(): boolean {
+    return (this.st?.mode ?? this.mode) === 'public';
+  }
+
   private exit() {
     this.dispose();
-    this.onExit();
+    this.onExit(this.resultMsg || (this.closedMsg && this.mode !== 'public' ? this.closedMsg : undefined));
   }
 
   dispose() {

@@ -88,7 +88,7 @@ input {
   z-index: 2;
   display: flex;
   align-items: center;
-  height: 56px;
+  height: 64px;
   padding: 0 20px;
   background: linear-gradient(rgba(8, 9, 12, 0.85), rgba(8, 9, 12, 0.55));
   border-bottom: 1px solid var(--line);
@@ -99,6 +99,9 @@ input {
   letter-spacing: 0.08em;
   min-width: 180px;
   text-transform: uppercase;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 .nav {
   flex: 1;
@@ -131,7 +134,7 @@ input {
 }
 .menu-body {
   position: absolute;
-  inset: 56px 0 0;
+  inset: 64px 0 0;
   display: grid;
   grid-template-columns: minmax(220px, 300px) 1fr minmax(220px, 320px);
   gap: 20px;
@@ -1244,4 +1247,140 @@ input {
 }
 .buy-sell:hover {
   background: #c4f0b6;
+}
+
+/* ---------- Звания под ником: матчмейкинг (уровень и Elo) и союзники ---------- */
+.nick-name {
+  font-size: 14px;
+  line-height: 1.2;
+}
+.rank-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: none;
+  line-height: 1.25;
+}
+.rank-line .lvl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  font-size: 8px;
+  font-weight: 700;
+}
+.rank-line .lvl.wm {
+  border-color: #8fb4ff;
+  color: #8fb4ff;
+}
+
+/* ---------- Новости: своя прокрутка, не заходят под кнопку «Играть» ---------- */
+.panel.news {
+  max-height: calc(100% - 120px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+.panel.news .panel-title {
+  position: sticky;
+  top: -16px;
+  margin: -16px -16px 12px;
+  padding: 16px 16px 8px;
+  background: rgba(14, 16, 20, 0.95);
+  z-index: 1;
+}
+
+/* ---------- Выбор режима и поиск матча ---------- */
+.modes-modal {
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 20;
+}
+.modal.modes-pick {
+  width: min(520px, calc(100vw - 32px));
+}
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.mode-card b {
+  font-family: var(--wide);
+  letter-spacing: 0.08em;
+  color: var(--text);
+  font-size: 15px;
+}
+.mode-card:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.modal.queue {
+  text-align: center;
+  align-items: center;
+}
+.queue-mode {
+  font-family: var(--wide);
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.queue-timer {
+  font-family: var(--wide);
+  font-size: 42px;
+  letter-spacing: 0.08em;
+}
+.menu-notice {
+  position: absolute;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  max-width: calc(100vw - 32px);
+  padding: 12px 20px;
+  background: rgba(14, 16, 20, 0.92);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  font-size: 14px;
+  cursor: pointer;
+}
+@media (max-width: 900px) {
+  .panel.news {
+    max-height: none;
+  }
+}
+
+/* ---------- Лента убийств: силуэт оружия и значок попадания в голову ---------- */
+.kf {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.kf-icon {
+  height: 18px;
+  width: auto;
+  display: block;
+  opacity: 0.92;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
+}
+.kf-icon.kf-headshot,
+.kf-icon.kf-explode {
+  height: 16px;
+  margin-left: -3px;
+}
+.kf-icon.kf-explode {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) sepia(1) saturate(4) hue-rotate(-30deg);
 }

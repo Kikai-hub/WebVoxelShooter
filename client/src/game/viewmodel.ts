@@ -103,6 +103,16 @@ export class ViewModel {
   private glove: THREE.Mesh;
   private sleeveL: THREE.Mesh;
   private gloveL: THREE.Mesh;
+  /** закладка/обезвреживание: оружие уходит вниз, видны бомба и руки над ней */
+  private useGroup = new THREE.Group();
+  private useKind: 'plant' | 'defuse' | null = null;
+  private use = 0;
+  private useT = 0;
+  private useHandR: THREE.Group;
+  private useHandL: THREE.Group;
+  private cutters: THREE.Mesh;
+  private useSleeves: THREE.Mesh[] = [];
+  private useGloves: THREE.Mesh[] = [];
 
   constructor(private skin: number) {
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.01, 10);
@@ -122,6 +132,34 @@ export class ViewModel {
     this.flash.visible = false;
     this.gunHolder.add(this.flash);
     this.root.position.set(0.22, -0.24, -0.42);
+    // бомба: корпус, панель с кнопками, лампочка; руки — рукав и перчатка
+    const bomb = new THREE.Group();
+    bomb.add(box(0.26, 0.09, 0.16, 0x4a4f3a, 0, 0, 0));
+    bomb.add(box(0.12, 0.012, 0.09, 0x1d1f1a, 0.04, 0.05, 0));
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) bomb.add(box(0.025, 0.012, 0.025, 0xc9c2a8, 0.005 + i * 0.033, 0.058, -0.022 + j * 0.044));
+    bomb.add(box(0.03, 0.02, 0.03, 0xd02020, -0.08, 0.055, -0.04));
+    bomb.add(box(0.07, 0.06, 0.05, 0x8a6a3a, -0.08, 0.02, 0.03)); // взрывчатка
+    bomb.add(box(0.006, 0.006, 0.12, 0x2050c0, -0.04, 0.05, 0.02)); // провода
+    bomb.add(box(0.006, 0.006, 0.12, 0xc03020, -0.03, 0.05, 0.02));
+    this.useGroup.add(bomb);
+    const hand = (side: number) => {
+      const g = new THREE.Group();
+      const sleeve = box(0.08, 0.08, 0.34, 0x5a6332, 0, 0.02, 0.2);
+      const glove = box(0.075, 0.07, 0.08, 0x3a3a30, 0, 0, 0);
+      sleeve.rotation.x = -0.35;
+      this.useSleeves.push(sleeve);
+      this.useGloves.push(glove);
+      g.add(sleeve, glove);
+      g.position.set(side * 0.07, 0.11, 0.06);
+      this.useGroup.add(g);
+      return g;
+    };
+    this.useHandR = hand(1);
+    this.useHandL = hand(-1);
+    this.cutters = box(0.02, 0.02, 0.09, 0x9aa0a6, 0, -0.03, -0.06);
+    this.useHandR.add(this.cutters);
+    this.useGroup.visible = false;
+    this.scene.add(this.useGroup);
     // модель загрузилась позже блочной заглушки — пересобрать оружие в руках
     onGunModel(() => {
       for (const g of this.guns.values()) this.gunHolder.remove(g);
@@ -132,9 +170,18 @@ export class ViewModel {
     });
   }
 
+  /** Закладка (нападение), обезвреживание (защита) или ничего. */
+  setUse(kind: 'plant' | 'defuse' | null) {
+    if (kind) this.useKind = kind;
+    this.useTarget = kind ? 1 : 0;
+  }
+  private useTarget = 0;
+
   setTeam(team: number) {
     const sl = team === 0 ? 0xc2a77a : 0x2f4f7f;
     const gl = team === 0 ? 0x3a3a30 : 0x141518;
+    for (const s of this.useSleeves) (s.material as THREE.MeshLambertMaterial).color.set(sl);
+    for (const g of this.useGloves) (g.material as THREE.MeshLambertMaterial).color.set(gl);
     (this.sleeve.material as THREE.MeshLambertMaterial).color.set(sl);
     (this.sleeveL.material as THREE.MeshLambertMaterial).color.set(sl);
     (this.glove.material as THREE.MeshLambertMaterial).color.set(gl);
@@ -208,6 +255,29 @@ export class ViewModel {
       this.reloadT -= dt;
       const k = 1 - this.reloadT / this.reloadDur;
       dip += Math.sin(Math.min(1, k) * Math.PI) * 0.22;
+    }
+    // закладка/обезвреживание: оружие опускается за край экрана, снизу поднимаются бомба и руки
+    this.use += (this.useTarget - this.use) * (1 - Math.exp(-dt * 10));
+    this.useT = this.useTarget > 0 ? this.useT + dt : 0;
+    dip += this.use * 0.6;
+    const u = this.use;
+    this.useGroup.visible = visible && u > 0.02;
+    if (this.useGroup.visible) {
+      const plant = this.useKind === 'plant';
+      this.useGroup.position.set(0.02, -0.34 - (1 - u) * 0.35, -0.55);
+      this.useGroup.rotation.set(0.55, 0, 0);
+      this.cutters.visible = !plant;
+      const t = this.useT;
+      if (plant) {
+        // набор кода: пальцы по очереди нажимают кнопки
+        const tap = Math.sin(t * 13);
+        this.useHandR.position.set(0.04, 0.1 + 0.025 * Math.max(0, tap), 0.03);
+        this.useHandL.position.set(-0.1, 0.09 + 0.025 * Math.max(0, -tap), 0.05);
+      } else {
+        // разминирование: левая держит корпус, правая с кусачками ходит по проводам
+        this.useHandL.position.set(-0.13, 0.07, 0.05);
+        this.useHandR.position.set(-0.035 + Math.sin(t * 2.2) * 0.03, 0.09 + 0.012 * Math.sin(t * 9), 0.02 + Math.cos(t * 2.2) * 0.02);
+      }
     }
     const bx = Math.sin(this.bob) * 0.012 * Math.min(1, speed / 5);
     const by = Math.abs(Math.cos(this.bob)) * 0.012 * Math.min(1, speed / 5);

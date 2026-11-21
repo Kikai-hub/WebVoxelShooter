@@ -31,6 +31,8 @@ export interface AnimInput {
   reloading: boolean;
   /** вид оружия: у ножа и гранаты руки двигаются иначе */
   weaponKind: string;
+  /** закладывает или обезвреживает бомбу */
+  using?: boolean;
 }
 
 export class AgentAnimator {
@@ -53,6 +55,8 @@ export class AgentAnimator {
   private kick = 0;
   private reload = 0;
   private reloadT = 0;
+  private use = 0;
+  private useT = 0;
   private t = Math.random() * 10;
 
   /** Выстрел этого игрока: руки и плечи подбрасывает отдачей. */
@@ -94,7 +98,10 @@ export class AgentAnimator {
     this.pz = s.z;
     this.pyaw = s.yaw;
 
-    this.crouch = approach(this.crouch, s.crouch ? 1 : 0, 14, dt);
+    this.use = approach(this.use, s.using ? 1 : 0, 10, dt);
+    this.useT = s.using ? this.useT + dt : 0;
+    // на колене: тело опускается как в приседе
+    this.crouch = approach(this.crouch, s.crouch || s.using ? 1 : 0, 14, dt);
     const wasAir = this.air > 0.5;
     this.air = approach(this.air, s.onGround ? 0 : 1, s.onGround ? 18 : 10, dt);
     this.airTime = s.onGround ? 0 : this.airTime + dt;
@@ -153,6 +160,14 @@ export class AgentAnimator {
     legL += this.land * 0.25;
     legR += this.land * 0.25;
 
+    // закладка/обезвреживание: левая нога согнута впереди, правое колено на земле
+    const u = this.use;
+    if (u > 0.01) {
+      legL += (1.15 - legL) * u;
+      kneeL += (1.7 - kneeL) * u;
+      legR += (-0.05 - legR) * u;
+      kneeR += (1.6 - kneeR) * u;
+    }
     a.crouch = this.crouch;
     a.legL = legL;
     a.legR = legR;
@@ -172,6 +187,11 @@ export class AgentAnimator {
     a.armPitch -= 0.3 * this.reload;
     a.weapon = s.weaponKind;
     a.headYaw = 0;
+    // наклон к бомбе
+    a.use = u;
+    a.useT = this.useT;
+    a.lean -= 0.45 * u;
+    a.armPitch *= 1 - u;
     return a;
   }
 }

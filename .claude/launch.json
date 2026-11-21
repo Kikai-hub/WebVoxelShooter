@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 5173
+    },
+    {
+      "name": "vts-dev-ranked-bots",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set RANKED_BOT_FILL=5&& npm run dev"],
+      "port": 5173
     }
   ]
 }

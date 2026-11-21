@@ -20,7 +20,7 @@ interface Actor {
   x0: number;
   z0: number;
   /** движение: позиция, поворот и флаги в момент t */
-  move: (t: number) => { x: number; y: number; z: number; yaw: number; crouch: boolean; onGround: boolean; reloading: boolean; fire: boolean; pitch: number };
+  move: (t: number) => { x: number; y: number; z: number; yaw: number; crouch: boolean; onGround: boolean; reloading: boolean; fire: boolean; pitch: number; using?: 'plant' | 'defuse' };
   weapon: string;
   lastFire: number;
 }
@@ -79,6 +79,8 @@ const scenarios: Scn[] = [
   { name: 'Стрельба (стоя / присев)', weapon: 'rifle', move: (t) => still({ crouch: t % 8 > 4, fire: t % 2 < 1.2, yaw: YAW_CAM - 1.2 }) },
   { name: 'Перезарядка', weapon: 'rifle', move: (t) => still({ reloading: t % 4 < 2.4, yaw: YAW_CAM - 1 }) },
   { name: 'Поворот на месте', weapon: 'rifle', move: (t) => still({ yaw: YAW_CAM + Math.sin(t * 0.9) * 1.6 }) },
+  { name: 'Закладка бомбы', weapon: 'rifle', move: (t) => still({ using: t % 6 < 4 ? 'plant' : undefined, yaw: YAW_CAM - 1.1 }) },
+  { name: 'Обезвреживание', weapon: 'pistol', move: (t) => still({ using: t % 8 < 6 ? 'defuse' : undefined, yaw: YAW_CAM - 1.1 }) },
 ];
 function walk(t: number, speed: number, crouch: boolean) {
   const { s, dir } = back(t, LEN, speed);
@@ -203,10 +205,11 @@ function frame() {
       a.anim.fire(a.weapon);
     }
     if (dt > 0) {
-      const an = a.anim.update(dt, { x, y: m.y, z, yaw: m.yaw, crouch: m.crouch, onGround: m.onGround, reloading: m.reloading, weaponKind: a.weapon });
+      const an = a.anim.update(dt, { x, y: m.y, z, yaw: m.yaw, crouch: m.crouch, onGround: m.onGround, reloading: m.reloading, weaponKind: a.weapon, using: !!m.using });
       applyFore(an, KEY_OF[a.weapon]);
       computePose(x, m.y, z, m.yaw, m.pitch, m.crouch, a.pose, an);
-      a.body.setWeapon(a.weapon, KEY_OF[a.weapon]);
+      if (an.use > 0.5) a.body.setWeapon(m.using === 'plant' ? 'bomb' : 'none');
+      else a.body.setWeapon(a.weapon, KEY_OF[a.weapon]);
       a.body.applyPose(a.pose, an);
     }
     v.set(a.x0, 2.3, a.z0).project(camera);

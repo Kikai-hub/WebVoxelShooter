@@ -92,7 +92,7 @@ function voxelColor(team: number, agent: number, part: number, x: number, y: num
   return shade(camo(camoA, camoB, camoC), n);
 }
 
-const GUN_COLORS: Record<string, number> = { pistol: 0x2b2b2e, smg: 0x333236, shotgun: 0x5a3b22, rifle: 0x3a3430, sniper: 0x3c4436, knife: 0x9aa0a6 };
+const GUN_COLORS: Record<string, number> = { bomb: 0x4a4f3a, pistol: 0x2b2b2e, smg: 0x333236, shotgun: 0x5a3b22, rifle: 0x3a3430, sniper: 0x3c4436, knife: 0x9aa0a6 };
 
 interface PartMesh {
   mesh: InstancedMesh;
@@ -180,11 +180,11 @@ export class VoxelBody {
       return;
     }
     this.gun.visible = kind !== 'none';
-    const len = kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'grenade' ? 0.1 : kind === 'sniper' ? 0.8 : kind === 'smg' ? 0.4 : kind === 'shotgun' ? 0.62 : 0.6;
+    const len = kind === 'bomb' ? 0.3 : kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'grenade' ? 0.1 : kind === 'sniper' ? 0.8 : kind === 'smg' ? 0.4 : kind === 'shotgun' ? 0.62 : 0.6;
     // сколько оружия позади кисти: приклад упирается в плечо, у пистолета почти ничего
-    const behind = kind === 'pistol' ? 0.04 : kind === 'knife' || kind === 'grenade' ? 0 : kind === 'smg' ? 0.14 : kind === 'sniper' ? 0.22 : 0.18;
-    const thick = kind === 'pistol' ? 0.6 : kind === 'knife' ? 0.35 : kind === 'grenade' ? 1 : 1;
-    this.gun.scale.set(kind === 'knife' ? 0.3 : kind === 'grenade' ? 1.1 : 0.85, thick, len / 0.5);
+    const behind = kind === 'bomb' ? 0.15 : kind === 'pistol' ? 0.04 : kind === 'knife' || kind === 'grenade' ? 0 : kind === 'smg' ? 0.14 : kind === 'sniper' ? 0.22 : 0.18;
+    const thick = kind === 'bomb' ? 1.4 : kind === 'pistol' ? 0.6 : kind === 'knife' ? 0.35 : kind === 'grenade' ? 1 : 1;
+    this.gun.scale.set(kind === 'bomb' ? 2.6 : kind === 'knife' ? 0.3 : kind === 'grenade' ? 1.1 : 0.85, thick, len / 0.5);
     // центр коробки: вперёд от кисти на len/2 − behind, чуть выше кисти (рукоять под стволом)
     this.gun.position.set(0, kind === 'grenade' ? 0 : 0.045, -(len / 2 - behind));
     const tint = SKINS[this.skin]?.tint ?? 0xffffff;

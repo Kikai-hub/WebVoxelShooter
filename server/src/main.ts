@@ -6,7 +6,9 @@ import { extname, join, normalize, resolve } from 'node:path';
 import { WebSocketServer, type WebSocket, type RawData } from 'ws';
 import { decodeCmds, DT, type ClientMsg } from '../../shared/src/index';
 import { AccountStore, emptyStats, type Account } from './accounts';
-import { preloadMaps, Room, type Conn } from './room';
+import { mmLevel, wmRankLabel } from '../../shared/src/index';
+import { preloadMaps, type Conn, type Room } from './room';
+import { RoomManager, type RankedMode } from './rooms';
 import { execFileSync } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -36,7 +38,7 @@ function loadNews(): NewsItem[] {
     return raw
       .filter((n) => n && typeof n.title === 'string' && Array.isArray(n.items))
       .map((n) => ({ date: String(n.date ?? ''), title: String(n.title).slice(0, 80), items: n.items.slice(0, 6).map((s: unknown) => String(s).slice(0, 200)) }))
-      .slice(0, 5);
+      .slice(0, 12);
   } catch {
     return [];
   }
@@ -61,10 +63,9 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) =
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const accounts = new AccountStore(DATA_DIR);
-const START_MAPS = ['market', 'wasteland', 'quarter', 'caravan', 'medina'];
 preloadMaps();
-const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))), process.env.START_MAP ?? START_MAPS[Math.floor(Math.random() * START_MAPS.length)]);
-room.onStat = (id, d) => accounts.addStats(id, d);
+// комнаты создаются по требованию: паблик — при входе первого игрока, рейтинговые — когда поиск собрал матч
+const rooms = new RoomManager(accounts, BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))));
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
 let nextTick = performance.now();
@@ -74,7 +75,7 @@ function loop() {
   const now = performance.now();
   let n = 0;
   while (now >= nextTick && n < 8) {
-    room.step();
+    rooms.step();
     nextTick += tickMs;
     n++;
   }
@@ -129,7 +130,19 @@ function bearer(req: IncomingMessage): string {
 }
 
 function publicAccount(a: Account) {
-  return { login: a.login, loadout: a.loadout, settings: a.settings, created: a.created };
+  const r = accounts.ratings(a);
+  const lv = mmLevel(r.mm.elo);
+  return {
+    login: a.login,
+    loadout: a.loadout,
+    settings: a.settings,
+    created: a.created,
+    ratings: {
+      mm: { elo: r.mm.elo, level: lv.level, color: lv.color, matches: r.mm.matches, wins: r.mm.wins },
+      // скрытый рейтинг союзников не показываем — только звание
+      wm: { rank: r.wm.rank, name: wmRankLabel(r.wm), matches: r.wm.matches, wins: r.wm.wins },
+    },
+  };
 }
 
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
@@ -181,13 +194,13 @@ const server = createServer(async (req, res) => {
   try {
     if (path === '/healthz') {
       const ok = Date.now() - lastTickAt < 2000;
-      return json(res, ok ? 200 : 503, { ok, tick: room.tick, tickMs: room.tickTimeMs });
+      return json(res, ok ? 200 : 503, { ok, tick: rooms.tick, tickMs: rooms.tickTimeMs, rooms: rooms.rooms.size });
     }
     if (!path.startsWith('/api/')) return serveStatic(req, res);
-    if (req.method === 'GET' && path === '/api/status') return json(res, 200, { ...room.status(), accounts: accounts.count });
+    if (req.method === 'GET' && path === '/api/status') return json(res, 200, { ...rooms.status(), accounts: accounts.count });
     if (req.method === 'GET' && path === '/api/news') return json(res, 200, { version: VERSION, news: NEWS });
-    if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT') return json(res, 405, { error: 'method' });
-    const body = req.method === 'GET' ? {} : await readBody(req);
+    if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE') return json(res, 405, { error: 'method' });
+    const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
 
     if (path === '/api/register' && req.method === 'POST') {
       const r = await accounts.register(String(body.login ?? ''), String(body.password ?? ''), ip);
@@ -209,9 +222,9 @@ const server = createServer(async (req, res) => {
       if (body.cmd === 'ban') accounts.ban(String(body.login ?? ''), String(body.reason ?? ''), body.ip ? String(body.ip) : undefined);
       if (body.cmd === 'drain') {
         // после конца текущего матча процесс завершится, Docker перезапустит контейнер
-        room.draining = true;
-        console.log('drain: комната закроется после окончания матча');
-        room.onDrained = () => {
+        rooms.draining = true;
+        console.log('drain: сервер перезапустится, когда закончатся текущие матчи');
+        rooms.onDrained = () => {
           accounts.flush();
           process.exit(0);
         };
@@ -225,6 +238,20 @@ const server = createServer(async (req, res) => {
     if (!acc) return json(res, 401, { error: 'Нужно войти' });
     if (path === '/api/me' && req.method === 'GET') return json(res, 200, { account: publicAccount(acc) });
     if (path === '/api/stats' && req.method === 'GET') return json(res, 200, { stats: acc.stats ?? emptyStats() });
+    // Поиск рейтингового матча: встать в очередь, узнать состояние (клиент спрашивает каждые 2 с), выйти
+    if (path === '/api/queue') {
+      if (req.method === 'POST') {
+        const mode = body.mode;
+        if (mode !== 'mm' && mode !== 'wm') return json(res, 400, { error: 'Неизвестный режим' });
+        if (rooms.draining) return json(res, 503, { error: 'Сервер обновляется, поиск откроется через минуту' });
+        return json(res, 200, rooms.enqueue(acc.id, acc.login, mode as RankedMode));
+      }
+      if (req.method === 'DELETE') {
+        rooms.dequeue(acc.id);
+        return json(res, 200, { state: 'idle' });
+      }
+      return json(res, 200, rooms.queueState(acc.id));
+    }
     if (path === '/api/logout' && req.method === 'POST') {
       accounts.logout(token);
       return json(res, 200, { ok: true });
@@ -279,6 +306,7 @@ server.on('upgrade', (req, socket, head) => {
 function onSocket(ws: WebSocket, ip: string) {
   wsPerIp.set(ip, (wsPerIp.get(ip) ?? 0) + 1);
   let conn: Conn | null = null;
+  let room: Room | null = null;
   let budget = 0;
   let budgetReset = Date.now();
   const authTimer = setTimeout(() => ws.close(4001, 'auth timeout'), 5000);
@@ -295,7 +323,7 @@ function onSocket(ws: WebSocket, ip: string) {
       if (!conn) return;
       const buf = data instanceof Buffer ? data : Buffer.concat(data as Buffer[]);
       const cmds = decodeCmds(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
-      if (cmds) room.onCmds(conn, cmds);
+      if (cmds && room) room.onCmds(conn, cmds);
       return;
     }
     let msg: ClientMsg;
@@ -336,9 +364,19 @@ function onSocket(ws: WebSocket, ip: string) {
           }
         },
       };
+      const mode = msg.mode === 'mm' || msg.mode === 'wm' ? msg.mode : 'public';
+      const target = rooms.route(acc.id, mode);
+      if (typeof target === 'string') {
+        conn.sendJson({ t: 'kick', msg: target, end: true });
+        conn.close('no room');
+        conn = null;
+        return;
+      }
+      room = target;
       room.join(conn);
       return;
     }
+    if (!room) return;
     switch (msg.t) {
       case 'buy':
         if (conn.slot >= 0 && typeof msg.item === 'string') room.buy(room.players[conn.slot], msg.item);
@@ -364,13 +402,13 @@ function onSocket(ws: WebSocket, ip: string) {
   ws.on('close', () => {
     clearTimeout(authTimer);
     wsPerIp.set(ip, Math.max(0, (wsPerIp.get(ip) ?? 1) - 1));
-    if (conn) room.leave(conn);
+    if (conn && room) room.leave(conn);
   });
   ws.on('error', () => {});
 }
 
 server.listen(PORT, () => {
-  console.log(`Voxel Tactical Shooter: сервер комнаты на порту ${PORT}, боты: ${BOT_LEVEL}, данные: ${DATA_DIR}`);
+  console.log(`Voxel Tactical Shooter: сервер на порту ${PORT}, боты: ${BOT_LEVEL}, данные: ${DATA_DIR}`);
 });
 
 function shutdown() {

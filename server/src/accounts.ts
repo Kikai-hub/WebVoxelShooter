@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DEFAULT_LOADOUT, type Loadout } from './room';
-import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS, defaultBinds, sanitizeBinds, type Binds } from '../../shared/src/index';
+import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS, defaultBinds, sanitizeBinds, newRatings, type Binds, type Ratings } from '../../shared/src/index';
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
 const SCRYPT_OPTS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -60,6 +60,8 @@ export interface Account {
   settings: Settings;
   banned?: string;
   stats?: PlayerStats;
+  /** рейтинги матчмейкинга (Elo) и союзников (звание) */
+  ratings?: Ratings;
 }
 
 interface Session {
@@ -303,6 +305,24 @@ export class AccountStore {
     }
     if (d.weapon) s.weapons[d.weapon] = (s.weapons[d.weapon] ?? 0) + 1;
     if (Object.keys(d).some((k) => k !== 'playSeconds')) this.save();
+  }
+
+  /** Аккаунт по id (для рейтингов в конце матча). */
+  get(accountId: string): Account | undefined {
+    return this.byId.get(accountId);
+  }
+
+  /** Рейтинги аккаунта (создаются при первом обращении). */
+  ratings(acc: Account): Ratings {
+    const r = (acc.ratings ??= newRatings());
+    r.mm ??= newRatings().mm;
+    r.wm ??= newRatings().wm;
+    return r;
+  }
+
+  /** Рейтинги изменились — сохранить. */
+  touch() {
+    this.save();
   }
 
   setSettings(acc: Account, s: unknown) {

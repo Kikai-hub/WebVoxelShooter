@@ -89,6 +89,7 @@ import {
   START_MONEY,
   TEAM_CT,
   TEAM_SIZE,
+  HALF_ROUNDS,
   TEAM_T,
   TICK_RATE,
   WEAPONS,
@@ -125,9 +126,28 @@ import {
   type Team,
   type UserCmd,
   type WeaponDef,
+  type GameMode,
+  MAP_LIST,
 } from '../../shared/src/index';
 import { Bot, BOT_NAMES } from './bot';
 import type { StatDelta } from './accounts';
+
+export interface RoomOpts {
+  mode?: GameMode;
+  id?: string;
+  teamSize?: number;
+  half?: number;
+  roundTime?: number;
+  /** рейтинговый матч: accountId для каждого слота (первые teamSize — нападение) */
+  roster?: string[];
+}
+export interface MatchResult {
+  room: Room;
+  winner: Team;
+  score: [number, number];
+  /** по слоту: аккаунт, сторона в конце, доиграл ли он матч сам, победил ли */
+  slots: Array<{ accountId: string; team: Team; present: boolean; won: boolean }>;
+}
 
 export interface Loadout {
   primary: [string, string];
@@ -338,14 +358,39 @@ export class Room {
   stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0, 0], nadeKills: 0, blinded: 0 };
   tickTimeMs = 0;
 
+  /** режим: паблик (боты, свободный вход), матчмейкинг 5×5 или союзники 2×2 */
+  readonly mode: GameMode;
+  readonly id: string;
+  readonly teamSize: number;
+  /** длина половины матча в раундах (12 или 8) */
+  readonly half: number;
+  readonly roundTime: number;
+  /** рейтинговый матч: accountId игрока для каждого слота; чужим вход закрыт */
+  readonly roster: string[] | null;
+  readonly maxSpectators: number;
+  /** комната закрыта (рейтинговый матч окончен или брошен) — её можно удалять */
+  closed = false;
+  /** рейтинговый матч закончился */
+  onMatchOver: ((r: MatchResult) => void) | null = null;
+  /** когда в комнате последний раз было хоть одно подключение */
+  lastOccupied = 0;
+
   constructor(
     readonly botLevel: string = 'medium',
-    readonly maxSpectators: number = MAX_SPECTATORS,
+    maxSpectators: number = MAX_SPECTATORS,
     initialMap = 'market',
+    opts: RoomOpts = {},
   ) {
+    this.mode = opts.mode ?? 'public';
+    this.id = opts.id ?? 'public';
+    this.teamSize = opts.teamSize ?? TEAM_SIZE;
+    this.half = opts.half ?? HALF_ROUNDS;
+    this.roundTime = opts.roundTime ?? ROUND_TIME;
+    this.roster = opts.roster ?? null;
+    this.maxSpectators = this.roster ? 0 : maxSpectators;
     this.loadMap(MAPS[initialMap] ? initialMap : 'market');
-    for (let i = 0; i < MAX_PLAYERS; i++) {
-      const p = new Player(i, i < TEAM_SIZE ? TEAM_T : TEAM_CT);
+    for (let i = 0; i < this.teamSize * 2; i++) {
+      const p = new Player(i, i < this.teamSize ? TEAM_T : TEAM_CT);
       this.makeBot(p);
       this.players.push(p);
     }
@@ -383,7 +428,50 @@ export class Room {
     return this.players.filter((p) => (!p.isBot || p.pending) && (team === undefined || p.team === team)).length;
   }
 
+  get ranked(): boolean {
+    return this.roster !== null;
+  }
+
+  /** Сколько людей в комнате (игроки, ожидающие и наблюдатели). */
+  get people(): number {
+    return this.conns.size;
+  }
+
+  /** Есть ли место для ещё одного игрока (у бота или в наблюдателях). */
+  hasRoom(): boolean {
+    return !this.closed && (this.players.some((p) => p.isBot && !p.pending) || this.spectators.size < this.maxSpectators);
+  }
+
   join(conn: Conn): void {
+    // рейтинговый матч: только свои игроки и только на своё место
+    if (this.roster) {
+      const idx = this.roster.indexOf(conn.accountId);
+      if (idx < 0 || this.closed) {
+        conn.sendJson({ t: 'kick', msg: this.closed ? 'Матч уже закончился' : 'Вы не участник этого матча', end: true });
+        conn.close('not in roster');
+        return;
+      }
+      this.conns.add(conn);
+      const own = this.players[idx];
+      if (!own.isBot && own.accountId === conn.accountId) {
+        if (own.conn && own.conn !== conn) own.conn.close('Вход с другого устройства');
+        own.conn = conn;
+        own.lastSeq = 0;
+        own.cmdQueue.length = 0;
+        own.lastButtons = 0;
+        conn.slot = own.id;
+        this.sendFull(conn);
+        this.events.push({ e: 'info', text: `${conn.login} вернулся в игру` });
+      } else if (own.pending && own.pending.accountId === conn.accountId) {
+        own.pending.close('Вход с другого устройства');
+        own.pending = conn;
+        conn.pendingSlot = own.id;
+        conn.slot = -1;
+        this.spectators.add(conn);
+        this.sendFull(conn);
+      } else this.assignHuman(own, conn);
+      return;
+    }
     this.conns.add(conn);
     // Переподключение к своему месту
     const own = this.players.find((p) => !p.isBot && p.accountId === conn.accountId);
@@ -417,7 +505,7 @@ export class Room {
       return;
     }
     if (this.spectators.size >= this.maxSpectators) {
-      conn.sendJson({ t: 'kick', msg: 'Комната заполнена: 10 игроков и 20 наблюдателей' });
+      conn.sendJson({ t: 'kick', msg: `Комната заполнена: ${this.players.length} игроков и ${this.maxSpectators} наблюдателей`, end: true });
       conn.close('full');
       this.conns.delete(conn);
       return;
@@ -523,6 +611,7 @@ export class Room {
    */
   switchTeam(conn: Conn, team: number) {
     if (team !== TEAM_T && team !== TEAM_CT) return;
+    if (this.ranked) return conn.sendJson({ t: 'err', msg: 'В рейтинговом матче команду сменить нельзя' });
     const now = this.time;
     if (conn.lastTeamSwitch !== undefined && now - conn.lastTeamSwitch < 3) return;
     // наблюдатель или ждёт места — просто занять место у бота нужной стороны
@@ -727,6 +816,7 @@ export class Room {
   votes = new Map<string, string>();
 
   private startVote() {
+    if (this.ranked) return this.close('Матч окончен');
     this.phase = 'vote';
     this.phaseEnd = this.time + VOTE_TIME;
     this.votes.clear();
@@ -734,7 +824,7 @@ export class Room {
   }
 
   vote(conn: Conn, mapId: string) {
-    if (this.phase !== 'vote' || !MAPS[mapId]) return;
+    if (this.phase !== 'vote' || !MAP_LIST.some((m) => m.id === mapId)) return;
     // голосуют игроки комнаты (в том числе ожидающие места)
     const isPlayer = this.players.some((p) => (p.conn === conn || p.pending === conn) && !p.isBot) || conn.pendingSlot >= 0;
     if (!isPlayer) return;
@@ -743,7 +833,7 @@ export class Room {
 
   voteCounts(): Record<string, number> {
     const out: Record<string, number> = {};
-    for (const id of Object.keys(MAPS)) out[id] = 0;
+    for (const m of MAP_LIST) out[m.id] = 0;
     for (const v of this.votes.values()) out[v] = (out[v] ?? 0) + 1;
     return out;
   }
@@ -785,10 +875,10 @@ export class Room {
 
   private startRound() {
     const next = this.roundNum + 1;
-    if (swapsSidesBefore(next)) {
+    if (swapsSidesBefore(next, this.half)) {
       this.halfDone = true;
       // в овертайме — одинаковые деньги у всех, в основное время — стартовые
-      const ot = overtimeOf(next) > 0;
+      const ot = overtimeOf(next, this.half) > 0;
       for (const p of this.players) {
         p.team = (1 - p.team) as Team;
         p.money = ot ? OT_MONEY : START_MONEY;
@@ -909,13 +999,22 @@ export class Room {
       this.stat(p, { rounds: 1, roundsWon: p.team === winner ? 1 : 0, mvps: p === mvp ? 1 : 0 });
     }
     this.events.push({ e: 'roundEnd', w: winner, why, mvp: mvp ? mvp.id : -1 });
-    if (this.scores[winner] >= winTarget(this.roundNum)) {
+    if (this.scores[winner] >= winTarget(this.roundNum, this.half)) {
       for (const p of this.players) if (!p.isBot && p.conn) this.stat(p, { matches: 1, matchesWon: p.team === winner ? 1 : 0 });
       this.phase = 'matchEnd';
       this.phaseEnd = this.time + MATCH_END_TIME;
       this.stats.matches++;
       this.stats.matchWins[winner]++;
       this.events.push({ e: 'matchEnd', w: winner });
+      if (this.roster) {
+        // кто к концу матча на своём месте (не бот) — доиграл; остальные покинули матч и получают поражение
+        const slots = this.roster.map((acc, i) => {
+          const p = this.players[i];
+          const present = !p.isBot && p.accountId === acc;
+          return { accountId: acc, team: p.team, present, won: present && p.team === winner };
+        });
+        this.onMatchOver?.({ room: this, winner, slots, score: [this.scores[0], this.scores[1]] });
+      }
     } else {
       this.phase = 'roundEnd';
       this.phaseEnd = this.time + ROUND_END_TIME;
@@ -941,7 +1040,7 @@ export class Room {
         if (now >= this.phaseEnd) {
           this.phase = 'live';
           this.liveStart = now;
-          this.phaseEnd = now + ROUND_TIME;
+          this.phaseEnd = now + this.roundTime;
         }
         break;
       case 'live':
@@ -1073,8 +1172,27 @@ export class Room {
 
   // ---------- Тик ----------
 
+  /** Закрыть комнату: всех вернуть в меню с сообщением. */
+  close(msg: string) {
+    if (this.closed) return;
+    this.closed = true;
+    for (const c of [...this.conns]) {
+      c.sendJson({ t: 'kick', msg, end: true });
+      c.close('room closed');
+    }
+    this.conns.clear();
+    this.spectators.clear();
+  }
+
   step() {
+    if (this.closed) return;
     const t0 = performance.now();
+    if (this.conns.size > 0 || this.tick === 0) this.lastOccupied = this.time;
+    // рейтинговый матч, где 90 с никого нет (не зашли или все ушли), — отменяем без изменения рейтинга
+    if (this.roster && this.time - this.lastOccupied > 90) {
+      this.close('Матч отменён: игроки не подключились');
+      return;
+    }
     // обновление сервера: если живых людей в комнате нет, не ждём конца матча с ботами
     if (this.draining && this.conns.size === 0) {
       this.onDrained?.();
@@ -1133,12 +1251,15 @@ export class Room {
       return;
     }
     const canMove = this.phase !== 'freeze' && this.phase !== 'vote';
+    // закладывает или обезвреживает бомбу: ничего другого делать нельзя
+    // (движение и прыжок останавливает сама физика при зажатой E, здесь — оружие)
+    const busy = p.useProgress > 0 && (cmd.buttons & BTN_USE) !== 0;
     stepPlayer(p.st, cmd.buttons, p.yaw, this.info.map, canMove, p.weapon.speed);
     p.recoil *= Math.exp(-DT * 6);
 
     // Смена оружия (гранаты — только если они есть)
     if (p.slot >= SLOT_HE && p.nades[p.slot - SLOT_HE] <= 0) p.slot = p.gunSlot;
-    if (cmd.slot !== p.slot && cmd.slot <= SLOT_FIRE) {
+    if (!busy && cmd.slot !== p.slot && cmd.slot <= SLOT_FIRE) {
       const ok = cmd.slot >= SLOT_HE ? p.nades[cmd.slot - SLOT_HE] > 0 : cmd.slot !== SLOT_PRIMARY || !!p.primary;
       if (ok) {
         p.slot = cmd.slot;
@@ -1149,17 +1270,17 @@ export class Room {
     const wi = p.weaponInst;
     const def = p.weapon;
     // Перезарядка
-    if (cmd.buttons & BTN_RELOAD && wi && p.reloadEnd === 0 && wi.mag < def.mag && wi.reserve > 0) {
+    if (!busy && cmd.buttons & BTN_RELOAD && wi && p.reloadEnd === 0 && wi.mag < def.mag && wi.reserve > 0) {
       p.reloadEnd = p.simTime + def.reload;
       this.events.push({ e: 'reload', s: p.id });
     }
     const pressed = cmd.buttons & ~p.lastButtons;
     // Выбросить оружие (G) и подобрать с земли (E)
-    if (pressed & BTN_DROP) this.dropWeapon(p, true);
+    if (pressed & BTN_DROP && !busy) this.dropWeapon(p, true);
     if (pressed & BTN_USE) this.tryPickup(p);
     // Бросок гранаты
     if (def.kind === 'grenade') {
-      if (pressed & BTN_FIRE && this.phase !== 'freeze' && this.phase !== 'vote' && p.simTime >= p.nextFire) this.throwGrenade(p);
+      if (pressed & BTN_FIRE && !busy && this.phase !== 'freeze' && this.phase !== 'vote' && p.simTime >= p.nextFire) this.throwGrenade(p);
       p.lastButtons = cmd.buttons;
       return;
     }
@@ -1281,7 +1402,8 @@ export class Room {
           const n = attacker.roundKills;
           const call = n >= 2 ? (n === 2 ? 'doublekill' : n === 3 ? 'triplekill' : n === 4 ? 'megakill' : 'rampage') : !this.firstBlood ? 'firstblood' : null;
           this.firstBlood = true;
-          if (call) this.events.push({ e: 'announce', kind: call, s: attacker.id });
+          // комментатор — только в паблике; в рейтинговых режимах его нет
+          if (call && !this.ranked) this.events.push({ e: 'announce', kind: call, s: attacker.id });
           this.stat(attacker, { kills: 1, headshots: hs ? 1 : 0, weapon: def.key });
         }
         attacker.money = Math.min(MAX_MONEY, attacker.money + def.killReward);
@@ -1769,6 +1891,8 @@ export class Room {
       spec: this.spectators.size,
       map: this.mapId,
       half: this.halfDone,
+      mode: this.mode,
+      hl: this.half,
       votes: this.voteCounts(),
       drops: this.drops.map((d) => ({ i: d.id, w: d.inst.def.id, x: d.x, y: d.y, z: d.z, r: d.r })),
     };
@@ -1812,6 +1936,8 @@ export class Room {
 
   status() {
     return {
+      id: this.id,
+      mode: this.mode,
       humans: this.players.filter((p) => !p.isBot).length,
       bots: this.players.filter((p) => p.isBot).length,
       spectators: this.spectators.size,

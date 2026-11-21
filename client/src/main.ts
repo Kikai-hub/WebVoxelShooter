@@ -3,7 +3,8 @@
 
 import './style.css';
 import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
-import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type Settings } from './api';
+import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type QueueState, type RankedMode, type Settings } from './api';
+import type { GameMode } from '../../shared/src/index';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
 import { loadGunModels } from './game/weaponModels';
@@ -16,6 +17,9 @@ let account: AccountInfo | null = null;
 let agentView: AgentView | null = null;
 let statusTimer = 0;
 let game: Game | null = null;
+/** сообщение после возвращения из игры (итог рейтингового матча и т. п.) */
+let menuNotice = '';
+let queueTimer = 0;
 
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Record<string, string> = {}, ...kids: Array<Node | string>): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -157,7 +161,7 @@ function showMenu(tab: Tab = 'play') {
   }
   menu.append(bg);
   const top = h('div', { class: 'topbar' });
-  const nick = h('div', { class: 'nick' }, account.login);
+  const nick = h('div', { class: 'nick' }, h('div', { class: 'nick-name' }, account.login), ...rankLines(account));
   const nav = h('div', { class: 'nav' });
   const tabs: Array<[Tab, string]> = [
     ['play', 'ИГРАТЬ'],
@@ -188,11 +192,9 @@ function showMenu(tab: Tab = 'play') {
     try {
       const s = await api.status();
       const ping = Math.round(performance.now() - t0);
-      online.textContent = `В комнате: ${s.humans} игр. · ${s.bots} бот. · ${s.spectators} набл. · пинг ${ping} мс`;
-      const cm = document.querySelector('.cur-map');
-      if (cm) cm.textContent = s.map;
+      online.textContent = `Онлайн: ${s.online} · комнат ${s.rooms}/${s.maxRooms} · пинг ${ping} мс`;
       const pc = document.querySelector('.play-count');
-      if (pc) pc.textContent = `${s.humans} живых игроков · ${s.bots} ботов · счёт ${s.score[0]}:${s.score[1]} · раунд ${s.round}`;
+      if (pc) pc.textContent = `В поиске: матчмейкинг ${s.queue.mm} · союзники ${s.queue.wm}`;
     } catch {
       online.textContent = 'Сервер недоступен';
     }
@@ -201,7 +203,7 @@ function showMenu(tab: Tab = 'play') {
   statusTimer = window.setInterval(pollStatus, 5000);
 
   if (tab === 'play') {
-    const left = h('div', { class: 'panel modes' }, h('div', { class: 'panel-title' }, 'РЕЖИМ'), h('div', { class: 'mode active' }, h('b', {}, 'Бомба · 5×5'), h('span', {}, 'Одна комната на сайте. Пустые места занимают боты.')), h('div', { class: 'mode' }, h('b', {}, 'Карта сейчас'), h('span', { class: 'cur-map' }, '…'), h('span', {}, 'После каждого матча — голосование из трёх карт.')));
+    const left = h('div', { class: 'panel modes' }, h('div', { class: 'panel-title' }, 'РЕЖИМЫ'), ...MODE_INFO.map((m) => h('div', { class: 'mode' }, h('b', {}, m.title), h('span', {}, m.text))));
     const right = h(
       'div',
       { class: 'panel news' },
@@ -215,7 +217,7 @@ function showMenu(tab: Tab = 'play') {
       .then((r) => {
         const title = right.querySelector('.panel-title');
         const fmt = (d: string) => (d ? new Date(d).toLocaleDateString('ru-RU') : '');
-        r.news.slice(0, 2).forEach((n, i) => {
+        r.news.forEach((n, i) => {
           const ul = h('ul', { class: 'news-list' }, ...n.items.map((s) => h('li', {}, s)));
           const card = h('div', { class: 'card' + (i === 0 ? ' fresh' : '') }, h('small', {}, (i === 0 ? 'Последнее обновление · ' : '') + fmt(n.date)), h('b', {}, n.title), ul);
           const after = right.querySelectorAll('.card.update')[i - 1] ?? title;
@@ -227,7 +229,7 @@ function showMenu(tab: Tab = 'play') {
       .catch(() => {});
     const play = h('button', { class: 'play-btn' }, 'ИГРАТЬ');
     const count = h('div', { class: 'play-count' }, '');
-    play.onclick = () => void startGame();
+    play.onclick = () => void openModePicker();
     const playBox = h('div', { class: 'play-box' }, play, count);
     body.append(left, center, right, playBox);
     agentView = new AgentView(canvas);
@@ -243,6 +245,13 @@ function showMenu(tab: Tab = 'play') {
       sideBtns.append(b);
     }
     center.append(sideBtns);
+    if (menuNotice) {
+      const note = h('div', { class: 'menu-notice' }, menuNotice);
+      menuNotice = '';
+      note.onclick = () => note.remove();
+      menu.append(note);
+      setTimeout(() => note.remove(), 12000);
+    }
   } else if (tab === 'inventory') {
     renderInventory(body, center, canvas);
   } else if (tab === 'loadout') {
@@ -656,23 +665,121 @@ function renderSettings(body: HTMLElement) {
 
 // ---------- Игра ----------
 
-async function startGame() {
+// ---------- Выбор режима и поиск матча ----------
+
+const MODE_INFO: Array<{ id: GameMode; title: string; text: string }> = [
+  { id: 'public', title: 'Паблик · 5×5', text: 'Свободный вход в любой момент, пустые места занимают боты. После матча — голосование за карту.' },
+  { id: 'mm', title: 'Матчмейкинг · 5×5', text: 'Рейтинговый матч на 10 игроков до 13 побед. Elo как на FACEIT: уровень 1–10 зависит от числа Elo.' },
+  { id: 'wm', title: 'Союзники · 2×2', text: 'Рейтинговый матч двое на двое до 9 побед, раунд 1:30. 12 званий, первые 5 матчей — калибровка.' },
+];
+
+function rankLines(a: AccountInfo): HTMLElement[] {
+  const r = a.ratings;
+  const mm = h('div', { class: 'rank-line' });
+  if (r && r.mm.matches > 0) {
+    const lv = h('span', { class: 'lvl' }, String(r.mm.level));
+    lv.style.borderColor = lv.style.color = r.mm.color;
+    mm.append(lv, `ММ · ${r.mm.elo} Elo`);
+  } else mm.append(h('span', { class: 'lvl' }, '?'), 'ММ · ??? Elo');
+  const wm = h('div', { class: 'rank-line' }, h('span', { class: 'lvl wm' }, '★'), `Союзники · ${r && r.wm.rank !== null ? r.wm.name : '???'}`);
+  return [mm, wm];
+}
+
+function closeModal() {
+  clearInterval(queueTimer);
+  document.querySelector('.modal-back.modes-modal')?.remove();
+}
+
+async function openModePicker() {
   if (!account) return;
-  let mapId = 'market';
+  // матч уже найден (например, после обновления страницы) — сразу в него
   try {
-    mapId = (await api.status()).mapId ?? 'market';
+    const q = await api.queueState();
+    if (q.state === 'found' && q.mode) return startGame(q.mode);
+    if (q.state === 'searching' && q.mode) return showQueue(q);
   } catch {
-    /* узнаем из полного состояния */
+    /* покажем выбор */
   }
+  closeModal();
+  const back = h('div', { class: 'modal-back modes-modal' });
+  const box = h('div', { class: 'modal modes-pick' }, h('h2', {}, 'ВЫБОР РЕЖИМА'));
+  const err = h('div', { class: 'err' });
+  for (const m of MODE_INFO) {
+    const b = h('button', { class: 'mode-card' }, h('b', {}, m.title), h('span', {}, m.text));
+    b.onclick = async () => {
+      if (m.id === 'public') {
+        closeModal();
+        return startGame('public');
+      }
+      try {
+        showQueue(await api.queueJoin(m.id as RankedMode));
+      } catch (e) {
+        err.textContent = e instanceof Error ? e.message : 'Ошибка сети';
+      }
+    };
+    box.append(b);
+  }
+  const cancel = h('button', { class: 'btn' }, 'Отмена');
+  cancel.onclick = closeModal;
+  box.append(err, cancel);
+  back.append(box);
+  back.onclick = (e) => {
+    if (e.target === back) closeModal();
+  };
+  document.querySelector('.menu')?.append(back);
+}
+
+function showQueue(first: QueueState) {
+  closeModal();
+  const mode = first.mode ?? 'mm';
+  const title = mode === 'mm' ? 'Матчмейкинг · 5×5' : 'Союзники · 2×2';
+  const back = h('div', { class: 'modal-back modes-modal' });
+  const timer = h('div', { class: 'queue-timer' }, '0:00');
+  const info = h('div', { class: 'hint' }, '');
+  const cancel = h('button', { class: 'btn' }, 'Отменить поиск');
+  back.append(h('div', { class: 'modal queue' }, h('h2', {}, 'ПОИСК МАТЧА'), h('div', { class: 'queue-mode' }, title), timer, info, cancel));
+  document.querySelector('.menu')?.append(back);
+  const started = Date.now() - (first.wait ?? 0) * 1000;
+  const render = (q: QueueState) => {
+    if (q.state === 'found') {
+      closeModal();
+      void startGame(mode);
+      return;
+    }
+    if (q.state === 'idle') {
+      info.textContent = 'Поиск прерван';
+      clearInterval(queueTimer);
+      return;
+    }
+    info.textContent = `В поиске: ${q.count ?? 1} из ${q.need ?? 10} игроков` + (q.full ? ' · все комнаты сервера заняты, ждём свободную' : '');
+  };
+  render(first);
+  let tick = 0;
+  queueTimer = window.setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    timer.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    // состояние очереди — раз в 2 с (сервер забывает тех, кто не спрашивал 15 с)
+    if (++tick % 2 === 0) void api.queueState().then(render, () => (info.textContent = 'Нет связи с сервером…'));
+  }, 1000);
+  cancel.onclick = () => {
+    void api.queueLeave().catch(() => {});
+    closeModal();
+  };
+}
+
+async function startGame(mode: GameMode = 'public') {
+  if (!account) return;
+  closeModal();
   stopMenu();
   app.innerHTML = '';
-  game = new Game(app, account, () => {
+  game = new Game(app, account, (msg?: string) => {
+    if (msg) menuNotice = msg;
     game = null;
     void api.me().then((r) => {
       account = r.account;
       showMenu();
     }, () => boot());
-  }, mapId);
+  }, 'market', mode);
   if (import.meta.env.DEV) (window as any).__vts = game;
   game.onSettingsChanged = debounce((s: Settings) => {
     account!.settings = s;

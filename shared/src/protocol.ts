@@ -220,6 +220,16 @@ export interface PublicPlayer {
   kit: boolean; // набор сапёра (видят свои)
 }
 
+/** Режимы игры: паблик с ботами, матчмейкинг 5×5 по Elo, союзники 2×2 со званиями. */
+export type GameMode = 'public' | 'mm' | 'wm';
+export const GAME_MODES: Record<GameMode, { name: string; teamSize: number }> = {
+  public: { name: 'Паблик', teamSize: 5 },
+  mm: { name: 'Матчмейкинг', teamSize: 5 },
+  wm: { name: 'Союзники', teamSize: 2 },
+};
+/** Сколько всего комнат (всех режимов) может работать на сервере одновременно. */
+export const MAX_ROOMS = 20;
+
 export interface RoomState {
   t: 'st';
   ph: Phase;
@@ -231,6 +241,9 @@ export interface RoomState {
   spec: number;
   map: string;
   half: boolean;
+  /** режим комнаты и длина половины матча (12 — 5×5, 8 — союзники) */
+  mode: GameMode;
+  hl: number;
   /** голоса за карты во время голосования */
   votes: Record<string, number>;
   /** оружие на земле: id, оружие, позиция */
@@ -287,11 +300,15 @@ export type ServerMsg =
   | { t: 'ev'; e: GameEvent[] }
   | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: number[]; kit: boolean; /** что можно продать сейчас (купленное в этом раунде) */ sell?: string[] }
   | { t: 'err'; msg: string }
-  | { t: 'kick'; msg: string }
+  /** end — комната закрыта (матч окончен), клиент возвращается в меню без переподключения */
+  | { t: 'kick'; msg: string; end?: boolean }
+  /** итог рейтингового матча для игрока: изменение Elo (или скрытого рейтинга) и звание */
+  | { t: 'rating'; mode: GameMode; won: boolean; delta: number; elo: number; rank: string; promo?: string }
   | { t: 'pong'; c: number };
 
 export type ClientMsg =
-  | { t: 'auth'; token: string }
+  /** mode: в какой режим войти (рейтинговый — только в уже найденный матч) */
+  | { t: 'auth'; token: string; mode?: GameMode }
   | { t: 'buy'; item: string }
   | { t: 'chat'; text: string }
   | { t: 'ping'; c: number }

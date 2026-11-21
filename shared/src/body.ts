@@ -88,6 +88,9 @@ export interface PoseAnim {
   reload: number;
   /** поворот головы относительно тела */
   headYaw: number;
+  /** закладка/обезвреживание 0..1: на колене, руки у земли; useT — время для движения пальцев */
+  use: number;
+  useT: number;
   /** вид оружия в руках: от него зависит хват */
   weapon: string;
   /** цевьё конкретной модели относительно рукояти: вперёд вдоль ствола и вверх, м (0 — по виду оружия) */
@@ -102,7 +105,7 @@ export interface PoseAnim {
 }
 
 export function newPoseAnim(): PoseAnim {
-  return { crouch: 0, legL: 0, legR: 0, kneeL: 0, kneeR: 0, bob: 0, lean: 0, armPitch: 0, reload: 0, headYaw: 0, weapon: 'rifle', foreD: 0, foreUp: 0, elbowL: 0, elbowR: 0, gun: new Float32Array(POSE_STRIDE) };
+  return { crouch: 0, legL: 0, legR: 0, kneeL: 0, kneeR: 0, bob: 0, lean: 0, armPitch: 0, reload: 0, headYaw: 0, use: 0, useT: 0, weapon: 'rifle', foreD: 0, foreUp: 0, elbowL: 0, elbowR: 0, gun: new Float32Array(POSE_STRIDE) };
 }
 
 /** Число вокселей предплечья и голени (ниже локтя и колена). */
@@ -239,6 +242,20 @@ function computeAnimatedPose(x: number, y: number, z: number, yaw: number, pitch
   const lMag = rot(g.mag, 0.5);
   const r = an.reload;
   const left: [number, number, number] = [lHold[0] + (lMag[0] - lHold[0]) * r, lHold[1] + (lMag[1] - lHold[1]) * r, lHold[2] + (lMag[2] - lHold[2]) * r];
+  // закладка/обезвреживание: обе кисти у бомбы на земле перед коленями, пальцы по очереди «нажимают»
+  const u = an.use;
+  if (u > 0) {
+    const tap = Math.sin(an.useT * 13);
+    const handY = y + 0.2;
+    const tR: [number, number, number] = [0.1, handY + 0.04 * Math.max(0, tap), -0.5];
+    const tL: [number, number, number] = [-0.1, handY + 0.04 * Math.max(0, -tap), -0.46];
+    for (let i = 0; i < 3; i++) {
+      grip[i] += (tR[i] - grip[i]) * u;
+      left[i] += (tL[i] - left[i]) * u;
+    }
+    // бомба в руках — горизонтально, у правой кисти
+    writePart(an.gun, 0, lx(grip[0], grip[2]), grip[1], lz(grip[0], grip[2]), yaw, gp * (1 - u), 1);
+  }
 
   // ---- руки: плечо → локоть → кисть ----
   const sz = topZ - 0.02;

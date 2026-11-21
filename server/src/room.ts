@@ -18,6 +18,12 @@ import {
   PART_LEG_L,
   VOXEL,
   smokeBlocks,
+  MAX_CHIPS_PER_BLOCK,
+  MAX_CHIPS_PER_ROUND,
+  blockKey,
+  chipToArray,
+  chippable,
+  makeChip,
   stepNade,
   throwNade,
   type NadeState,
@@ -27,6 +33,8 @@ import {
   BUY_TIME,
   DEFUSE_RANGE,
   DEFUSE_TIME,
+  DEFUSE_TIME_KIT,
+  KIT_PRICE,
   DEFAULT_PISTOL,
   DT,
   FREEZE_TIME,
@@ -194,6 +202,8 @@ export class Player {
   /** гранаты: осколочные, светошумовые, дымовые */
   nades: [number, number, number] = [0, 0, 0];
   blindUntil = 0;
+  /** набор сапёра: обезвреживание за 5 с вместо 10 */
+  hasKit = false;
 
   get weapon(): WeaponDef {
     if (this.slot === SLOT_PRIMARY && this.primary) return this.primary.def;
@@ -404,6 +414,7 @@ export class Room {
     p.slot = SLOT_PISTOL;
     p.armor = 0;
     p.helmet = false;
+    p.hasKit = false;
     p.kills = 0;
     p.deaths = 0;
     p.cmdQueue.length = 0;
@@ -479,6 +490,12 @@ export class Room {
       if (p.nades[nt] >= NADE_LIMIT[NADE_TYPES[nt]] || p.money < def.price) return false;
       p.money -= def.price;
       p.nades[nt]++;
+      return true;
+    }
+    if (item === 'kit') {
+      if (p.team !== TEAM_CT || p.hasKit || p.money < KIT_PRICE) return false;
+      p.money -= KIT_PRICE;
+      p.hasKit = true;
       return true;
     }
     if (item === 'armor') {
@@ -568,6 +585,7 @@ export class Room {
       p.pistol = inst(DEFAULT_PISTOL);
       p.armor = 0;
       p.helmet = false;
+      p.hasKit = false;
       p.kills = 0;
       p.deaths = 0;
       p.nades = [0, 0, 0];
@@ -587,6 +605,7 @@ export class Room {
         p.pistol = inst(DEFAULT_PISTOL);
         p.armor = 0;
         p.helmet = false;
+      p.hasKit = false;
         if (!p.isBot) p.agent = p.loadout.agent[p.team] ?? 0;
       }
       this.scores = [this.scores[1], this.scores[0]];
@@ -602,6 +621,9 @@ export class Room {
     this.nadesInFlight = [];
     this.smokes = [];
     this.drops = [];
+    // стены восстанавливаются в начале раунда
+    this.chips = [];
+    this.chipsPerBlock.clear();
     this.botUtil = { smoke: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
     const spawnIdx = [0, 0];
     const order = [...this.info.spawns[0].keys()];
@@ -808,7 +830,7 @@ export class Room {
       }
       if (defuser) {
         defuser.useProgress += DT;
-        if (defuser.useProgress >= DEFUSE_TIME) {
+        if (defuser.useProgress >= (defuser.hasKit ? DEFUSE_TIME_KIT : DEFUSE_TIME)) {
           b.status = 'defused';
           defuser.useProgress = 0;
           defuser.money = Math.min(MAX_MONEY, defuser.money + 300);
@@ -964,6 +986,7 @@ export class Room {
         if (victim) this.stats.hits++;
       }
       if (def.kind !== 'knife') this.events.push({ e: 'shot', s: p.id, a: [ex, ey, ez], b: end, h });
+      if (h === 1 && def.kind !== 'knife') this.tryChip(def, end);
       if (victim) {
         // рана: вход, а при пробитии торса/головы — выход
         if (victim.wounds.length / 6 < MAX_WOUNDS) {
@@ -1027,6 +1050,7 @@ export class Room {
       victim.nades = [0, 0, 0];
       victim.armor = 0;
       victim.helmet = false;
+      victim.hasKit = false;
       this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
       for (const q of this.players) q.bot?.onTeammateDeath(victim);
       if (victim.hasBomb) {
@@ -1039,6 +1063,28 @@ export class Room {
       }
       this.checkElimination();
     }
+  }
+
+  // ---------- Сколы стен (только картинка) ----------
+
+  /** все сколы раунда подряд, по 10 чисел */
+  chips: number[] = [];
+  private chipsPerBlock = new Map<number, number>();
+
+  private tryChip(def: WeaponDef, end: [number, number, number]) {
+    const h = this.mapHit;
+    if (this.chips.length / 10 >= MAX_CHIPS_PER_ROUND) return;
+    if (!chippable(this.info.map, h.vx, h.vy, h.vz)) return;
+    const chance = def.kind === 'shotgun' ? 0.25 : def.kind === 'sniper' ? 1 : def.kind === 'rifle' ? 0.7 : 0.5;
+    if (this.rng.next() > chance) return;
+    const key = blockKey(h.vx, h.vy, h.vz);
+    const n = this.chipsPerBlock.get(key) ?? 0;
+    if (n >= MAX_CHIPS_PER_BLOCK) return;
+    this.chipsPerBlock.set(key, n + 1);
+    const radius = def.kind === 'sniper' ? 1.5 : def.kind === 'rifle' ? 1 : def.kind === 'shotgun' ? 0.5 : 0.5 + this.rng.next() * 0.5;
+    const op = chipToArray(makeChip(h.vx, h.vy, h.vz, end[0], end[1], end[2], h.nx, h.ny, h.nz, radius));
+    this.chips.push(...op);
+    this.events.push({ e: 'chip', c: op });
   }
 
   // ---------- Гранаты ----------
@@ -1079,8 +1125,44 @@ export class Room {
     if (this.smokes.length) this.smokes = this.smokes.filter((s) => s.end > now);
   }
 
+  /** Сколы от взрыва: лучи во все стороны, крупные выбоины рядом, мелкие — дальше. Пол тоже. */
+  private blastChips(x: number, y: number, z: number) {
+    const map = this.info.map;
+    const RAYS = 96;
+    let made = 0;
+    let floorMade = 0;
+    for (let i = 0; i < RAYS && made < 36; i++) {
+      // равномерные направления (спираль Фибоначчи)
+      const k = (i + 0.5) / RAYS;
+      const dy = 1 - 2 * k;
+      const r = Math.sqrt(1 - dy * dy);
+      const a = i * 2.39996323;
+      const dx = Math.cos(a) * r,
+        dz = Math.sin(a) * r;
+      if (!raycastMap(map, x, y + 0.15, z, dx, dy, dz, 3.4, this.mapHit)) continue;
+      const h = this.mapHit;
+      const t = h.t;
+      if (this.chips.length / 10 >= MAX_CHIPS_PER_ROUND) return;
+      if (!chippable(map, h.vx, h.vy, h.vz, true)) continue;
+      // дальние поверхности задеваются реже; пол — реже стен (лучей вниз слишком много)
+      if (this.rng.next() > 1.15 - t / 3.4) continue;
+      if (h.vy === 0 && (floorMade >= 10 || this.rng.next() < 0.55)) continue;
+      if (h.vy === 0) floorMade++;
+      const key = blockKey(h.vx, h.vy, h.vz);
+      const n = this.chipsPerBlock.get(key) ?? 0;
+      if (n >= MAX_CHIPS_PER_BLOCK) continue;
+      this.chipsPerBlock.set(key, n + 1);
+      const radius = Math.max(1, 2.2 - t * 0.45);
+      const op = chipToArray(makeChip(h.vx, h.vy, h.vz, x + dx * t, y + 0.15 + dy * t, z + dz * t, h.nx, h.ny, h.nz, radius));
+      this.chips.push(...op);
+      this.events.push({ e: 'chip', c: op });
+      made++;
+    }
+  }
+
   private explodeHE(owner: Player, team: Team, x: number, y: number, z: number) {
     const def = WEAPON_BY_KEY.he;
+    this.blastChips(x, y, z);
     for (const v of this.players) {
       if (!v.alive || v.team === team) continue;
       const dx = v.st.x - x,
@@ -1365,6 +1447,7 @@ export class Room {
       sk: p.skin,
       c: p.isBot || !!p.conn,
       bomb: p.hasBomb && (forTeam === TEAM_T || forTeam === -2),
+      kit: p.hasKit && (forTeam === p.team || forTeam === -2),
     }));
     return {
       t: 'st',
@@ -1389,8 +1472,8 @@ export class Room {
       const p = c.slot >= 0 ? this.players[c.slot] : null;
       // мёртвые и наблюдатели видят всё, как в спектаторском режиме
       c.sendJson(p ? (p.alive ? byTeam[p.team] : byTeam[p.team]) : spec);
-      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades] as [number, number, number] });
-      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0], spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
+      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades] as [number, number, number], kit: p.hasKit });
+      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0], kit: false, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
     }
   }
 
@@ -1404,6 +1487,7 @@ export class Room {
       wounds: this.players.filter((p) => p.wounds.length).map((p) => ({ i: p.id, ops: p.wounds.slice() })),
       tracers: true,
       smokes: this.smokes.map((s) => ({ x: s.x, y: s.y, z: s.z, left: s.end - this.time })),
+      chips: this.chips.slice(),
     };
   }
 

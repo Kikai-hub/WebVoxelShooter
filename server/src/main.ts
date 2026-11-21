@@ -17,7 +17,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) =
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const accounts = new AccountStore(DATA_DIR);
-const START_MAPS = ['market', 'wasteland', 'quarter'];
+const START_MAPS = ['market', 'wasteland', 'quarter', 'caravan', 'medina'];
 const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))), process.env.START_MAP ?? START_MAPS[Math.floor(Math.random() * START_MAPS.length)]);
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------

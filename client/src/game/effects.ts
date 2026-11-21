@@ -99,20 +99,46 @@ export class ImpactMarks {
   private zero = new THREE.Matrix4().makeScale(0, 0, 0);
   private up = new THREE.Vector3(0, 0, 1);
 
-  constructor(private max = 600) {
+  constructor(
+    private max = 600,
+    color = 0x241a12,
+    opacity = 1,
+  ) {
     const g = new THREE.PlaneGeometry(0.09, 0.09);
-    const m = new THREE.MeshBasicMaterial({ color: 0x241a12, polygonOffset: true, polygonOffsetFactor: -2 });
+    // копоть — полупрозрачная, следы пуль — непрозрачные
+    const m = new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthWrite: opacity >= 1, polygonOffset: true, polygonOffsetFactor: opacity < 1 ? -1 : -2 });
     this.mesh = new THREE.InstancedMesh(g, m, max);
     this.mesh.frustumCulled = false;
     for (let i = 0; i < max; i++) this.mesh.setMatrixAt(i, this.zero);
   }
 
-  add(x: number, y: number, z: number, nx: number, ny: number, nz: number) {
+  private at = new Float32Array(1200 * 3).fill(-1000);
+
+  /** Убрать следы рядом с точкой (там, где пуля выбила кусок стены). */
+  removeNear(x: number, y: number, z: number, r: number) {
+    let dirty = false;
+    for (let i = 0; i < this.max; i++) {
+      const o = i * 3;
+      if (Math.abs(this.at[o] - x) < r && Math.abs(this.at[o + 1] - y) < r && Math.abs(this.at[o + 2] - z) < r) {
+        this.mesh.setMatrixAt(i, this.zero);
+        this.at[o] = -1000;
+        dirty = true;
+      }
+    }
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  add(x: number, y: number, z: number, nx: number, ny: number, nz: number, size = 1) {
     const i = this.next;
+    this.at[i * 3] = x;
+    this.at[i * 3 + 1] = y;
+    this.at[i * 3 + 2] = z;
     this.next = (this.next + 1) % this.max;
     this.q.setFromUnitVectors(this.up, this.v.set(nx, ny, nz));
-    const sc = 0.7 + Math.random() * 0.6;
-    this.m4.compose(this.v.set(x + nx * 0.004, y + ny * 0.004, z + nz * 0.004), this.q, this.s.set(sc, sc, 1));
+    const sc = (0.7 + Math.random() * 0.6) * size;
+    // крупные пятна (копоть) чуть дальше от поверхности, чтобы не мерцали с мелкими следами
+    const off = size > 1 ? 0.006 : 0.004;
+    this.m4.compose(this.v.set(x + nx * off, y + ny * off, z + nz * off), this.q, this.s.set(sc, sc, 1));
     this.mesh.setMatrixAt(i, this.m4);
     this.mesh.instanceMatrix.needsUpdate = true;
   }

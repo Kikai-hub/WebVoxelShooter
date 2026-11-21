@@ -883,7 +883,10 @@ input {
   background: rgba(10, 12, 16, 0.92);
   border: 1px solid var(--line);
   padding: 18px;
-  grid-template-columns: repeat(3, 210px);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(700px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  overflow: auto;
   gap: 14px;
 }
 .buy-title {
@@ -999,7 +1002,7 @@ input {
   background: rgba(10, 12, 16, 0.92);
   border: 1px solid var(--line);
   padding: 20px;
-  width: min(820px, 94vw);
+  width: min(900px, 94vw);
 }
 .vote-title {
   font-family: var(--wide);
@@ -1008,7 +1011,7 @@ input {
 }
 .vote-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 12px;
   margin-bottom: 10px;
 }

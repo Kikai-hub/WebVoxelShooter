@@ -15,10 +15,13 @@ import {
   BTN_RIGHT,
   BTN_USE,
   DEFUSE_TIME,
+  DEFUSE_TIME_KIT,
   DT,
   INTERP_DELAY,
   MAPS,
   MAP_LIST,
+  SUB_SIZE,
+  chipFromArray,
   PLANT_TIME,
   POSE_SIZE,
   RUN_SPEED,
@@ -63,7 +66,8 @@ import { Sfx } from './audio';
 import { Debris } from './debris';
 import { ImpactMarks, Tracers } from './effects';
 import { Hud, TEAM_LABEL, slotList } from './hud';
-import { buildMapMeshes } from './mapMesh';
+import { MapRenderer } from './mapMesh';
+import { MAT_COLORS } from './atlas';
 import { Ragdoll } from './ragdoll';
 import { ViewModel } from './viewmodel';
 import { DropsView, NadeView, SmokeView } from './nades';
@@ -110,6 +114,8 @@ export class Game {
   private debris: Debris;
   private tracers = new Tracers();
   private impacts = new ImpactMarks();
+  /** копоть от взрывов: полупрозрачные пятна */
+  private scorch = new ImpactMarks(160, 0x140e0a, 0.55);
   private sfx = new Sfx();
   private hud: Hud;
   private ws: WebSocket | null = null;
@@ -212,12 +218,10 @@ export class Game {
     this.skyGroup = this.buildSkyDecor();
     this.scene.add(this.skyGroup);
 
-    const built = buildMapMeshes(this.info.map);
-    this.mapGroup = built.group;
-    this.mapMaterial = built.material;
-    this.scene.add(this.mapGroup);
+    this.mapRenderer = new MapRenderer(this.info.map);
+    this.scene.add(this.mapRenderer.group);
     this.debris = new Debris(this.info.map, 2000);
-    this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh);
+    this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh, this.scorch.mesh);
     this.nadeView = new NadeView(() => this.info.map);
     this.scene.add(this.nadeView.group, this.smokeView.mesh, this.dropsView.group);
 
@@ -258,30 +262,27 @@ export class Game {
   private smokeView = new SmokeView();
   private dropsView = new DropsView();
   private nades: [number, number, number] = [0, 0, 0];
-  private mapGroup: THREE.Group;
-  private mapMaterial: THREE.Material;
+  private hasKit = false;
+  private mapRenderer: MapRenderer;
   private skyGroup: THREE.Group;
 
   /** Смена карты после голосования: пересобираем меш, миникарту и окружение. */
   private setMap(id: string) {
     if (id === this.info.id || !MAPS[id]) return;
     this.info = MAPS[id]();
-    for (const g of [this.mapGroup, this.skyGroup]) {
-      this.scene.remove(g);
-      g.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
-    }
-    this.mapMaterial.dispose();
-    const built = buildMapMeshes(this.info.map);
-    this.mapGroup = built.group;
-    this.mapMaterial = built.material;
+    this.scene.remove(this.mapRenderer.group, this.skyGroup);
+    this.skyGroup.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    this.mapRenderer.dispose();
+    this.mapRenderer = new MapRenderer(this.info.map);
     this.skyGroup = this.buildSkyDecor();
-    this.scene.add(this.mapGroup, this.skyGroup);
+    this.scene.add(this.mapRenderer.group, this.skyGroup);
     this.debris.map = this.info.map;
     this.debris.clear();
     this.nadeView.clear();
     this.smokeView.clear();
     this.dropsView.clear();
     this.impacts.clear();
+    this.scorch.clear();
     this.hud.setMap(this.info);
     this.hud.info(`Карта: ${this.info.name}`);
   }
@@ -446,6 +447,7 @@ export class Game {
         }
         this.pisId = m.pis;
         this.nades = m.nades;
+        this.hasKit = m.kit;
         if (this.slot >= 3 && this.nades[this.slot - 3] <= 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         if (this.slot === SLOT_PRIMARY && this.priId < 0) this.slot = SLOT_PISTOL;
         break;
@@ -551,8 +553,11 @@ export class Game {
     }
     this.debris.clear();
     this.impacts.clear();
+    this.scorch.clear();
     this.nadeView.clear();
     this.smokeView.clear();
+    this.mapRenderer.clearChips();
+    for (let i = 0; i + 9 < (m.chips ?? []).length; i += 10) this.mapRenderer.applyChip(chipFromArray(m.chips, i));
     const nowS = performance.now() / 1000;
     for (const s of m.smokes ?? []) this.smokeView.add(s.x, s.y, s.z, s.left, nowS);
     for (const c of m.corpses) {
@@ -648,8 +653,21 @@ export class Game {
             computePose(e.at[0], e.at[1], e.at[2], e.at[3], 0, false, this.pose);
           }
           body.applyPose(this.pose);
-          const imp: [number, number, number] = [e.d[0] * 3.5, e.d[1] * 3.5 + 0.8, e.d[2] * 3.5];
-          body.ragdoll = new Ragdoll(this.info.map, this.pose, imp, e.p, e.hs);
+          // скорость, с которой бежал убитый (по двум последним снапшотам)
+          let vel: [number, number, number] = [0, 0, 0];
+          if (e.v === this.myId) vel = [this.pred.vx, this.pred.vy, this.pred.vz];
+          else if (p.snaps.length >= 2) {
+            const a = p.snaps[p.snaps.length - 2],
+              b = p.snaps[p.snaps.length - 1];
+            const t = Math.max(1, b.tick - a.tick) * DT;
+            vel = [(b.x - a.x) / t, (b.y - a.y) / t, (b.z - a.z) / t];
+            if (Math.hypot(vel[0], vel[2]) > 8) vel = [0, 0, 0];
+          }
+          // сила толчка зависит от оружия
+          const kind = WEAPONS[e.w]?.kind;
+          const k = kind === 'sniper' ? 2.6 : kind === 'shotgun' ? 2.2 : kind === 'grenade' ? 3 : kind === 'pistol' ? 1 : 1.4;
+          const imp: [number, number, number] = [e.d[0] * k, e.d[1] * k + (kind === 'grenade' ? 2.5 : 0.4), e.d[2] * k];
+          body.ragdoll = new Ragdoll(this.info.map, this.pose, imp, e.p, e.hs, vel);
           body.setWeapon('none');
           if (e.ex) body.explodeHead(this.debris, e.d, this.settings.blood);
         }
@@ -743,6 +761,22 @@ export class Game {
             const a = Math.random() * Math.PI * 2;
             this.markImpact([x, y + 0.2, z], [x + Math.cos(a) * 3, y - 0.6, z + Math.sin(a) * 3]);
           }
+          // копоть: кольцо тёмных пятен вокруг воронки (не над ней) и на ближайших стенах
+          for (let i = 0; i < 28; i++) {
+            const a = (i / 28) * Math.PI * 2 + Math.random() * 0.25;
+            const down = i % 2 === 0 ? 0.25 + Math.random() * 0.35 : Math.random() * 0.15;
+            const dx = Math.cos(a),
+              dz = Math.sin(a),
+              dl = Math.hypot(1, down);
+            if (raycastMap(this.info.map, x, y + 0.25, z, dx / dl, -down / dl, dz / dl, 3, this.mapHit)) {
+              const h = this.mapHit;
+              const t = h.t;
+              const px = x + (dx / dl) * t,
+                pz = z + (dz / dl) * t;
+              if (h.ny > 0 && Math.hypot(px - x, pz - z) < 0.6) continue; // пол в воронке выбит
+              this.scorch.add(px, y + 0.25 - (down / dl) * t, pz, h.nx, h.ny, h.nz, Math.max(2.5, 7 - t * 2));
+            }
+          }
         } else if (e.type === 1) {
           this.sfx.flashbang(d);
           for (let i = 0; i < 20; i++) this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 6, Math.random() * 5, (Math.random() - 0.5) * 6, 0xffffff, 0.4, 1);
@@ -755,6 +789,22 @@ export class Game {
       case 'flash': {
         const watching = this.predAlive ? this.myId : this.specTarget;
         if (e.v === watching) this.hud.flash(e.dur);
+        break;
+      }
+      case 'chip': {
+        const op = chipFromArray(e.c);
+        if (this.mapRenderer.applyChip(op)) {
+          // осколки — кубики размера под-вокселя цвета материала
+          const mat = this.info.map.get(op.bx, op.by, op.bz);
+          const col = MAT_COLORS[mat] ?? 0xb0a080;
+          const px = (op.bx + (op.sx + 0.5) / 4) * 0.5,
+            py = (op.by + (op.sy + 0.5) / 4) * 0.5,
+            pz = (op.bz + (op.sz + 0.5) / 4) * 0.5;
+          this.impacts.removeNear(px + op.nx * 0.06, py + op.ny * 0.06, pz + op.nz * 0.06, 0.2);
+          const n = 2 + Math.floor(op.r2 / 2);
+          for (let i = 0; i < n; i++)
+            this.debris.spawn(px + op.nx * 0.08, py + op.ny * 0.08, pz + op.nz * 0.08, op.nx * 2 + (Math.random() - 0.5) * 2, op.ny * 2 + Math.random() * 2, op.nz * 2 + (Math.random() - 0.5) * 2, col, 6 + Math.random() * 4, (SUB_SIZE / 0.06) * 0.8);
+        }
         break;
       }
       case 'pickup':
@@ -790,7 +840,8 @@ export class Game {
         pz = a[2] + (dz / l) * h.t;
       this.impacts.add(px, py, pz, h.nx, h.ny, h.nz);
       // пыль и сколы — кубики цвета материала
-      const col = [0xcbb38a, 0x9a8a72, 0xe0cfa8][Math.floor(Math.random() * 3)];
+      const base = MAT_COLORS[h.mat] ?? 0xcbb38a;
+      const col = Math.random() < 0.5 ? base : [0xcbb38a, 0x9a8a72, 0xe0cfa8][Math.floor(Math.random() * 3)];
       for (let i = 0; i < 4; i++) this.debris.spawn(px + h.nx * 0.05, py + h.ny * 0.05, pz + h.nz * 0.05, h.nx * 1.5 + (Math.random() - 0.5) * 1.5, h.ny * 1.5 + Math.random() * 1.5, h.nz * 1.5 + (Math.random() - 0.5) * 1.5, col, 1.5 + Math.random(), 0.8);
     }
   }
@@ -963,7 +1014,7 @@ export class Game {
       if (this.realLocked()) document.exitPointerLock();
       return;
     }
-    if (this.st?.ph === 'vote' && /^Digit[1-3]$/.test(code)) {
+    if (this.st?.ph === 'vote' && /^Digit[1-5]$/.test(code)) {
       const m = MAP_LIST[Number(code.slice(5)) - 1];
       if (m) this.castVote(m.id);
       return;
@@ -1003,7 +1054,7 @@ export class Game {
 
   private toggleBuy() {
     this.buyOpen = !this.buyOpen;
-    this.hud.showBuy(this.buyOpen, this.money, this.canBuyLocal());
+    this.hud.showBuy(this.buyOpen, this.money, this.canBuyLocal(), this.myTeam);
     if (this.buyOpen) {
       this.softLock = false;
       if (this.realLocked()) document.exitPointerLock();
@@ -1227,6 +1278,7 @@ export class Game {
     this.updatePlayers(dt);
     this.updateCamera(alpha);
     this.debris.update(dt);
+    this.mapRenderer.flush();
     this.nadeView.update(dt);
     this.smokeView.update(now);
     this.dropsView.sync(this.st?.drops ?? [], now);
@@ -1290,8 +1342,8 @@ export class Game {
         if (body?.ragdoll) {
           if (!body.ragdoll.sleeping) {
             body.ragdoll.update(dt);
-            body.ragdoll.writePose(body.pose);
-            body.applyPose(body.pose);
+            body.ragdoll.writeSegments(body.seg);
+            body.applySegments(body.seg);
           }
           body.group.visible = true;
         }
@@ -1444,14 +1496,14 @@ export class Game {
     if (own && own.present) {
       this.hud.setVitals(own.hp, own.armor, alive);
       const def = WEAPONS[own.weapon];
-      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot, this.nades), (own.flags & SF_RELOADING) !== 0);
+      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot, this.nades, this.hasKit), (own.flags & SF_RELOADING) !== 0);
       // прогресс закладки/обезвреживания
       if (own.flags & SF_USING && alive) {
         const isT = this.myTeam === 0;
         const startedAt = (this as any)._useStart ?? now;
         (this as any)._useStart = startedAt;
-        const total = isT ? PLANT_TIME : DEFUSE_TIME;
-        this.hud.setProgress(isT ? 'Закладка бомбы…' : 'Обезвреживание…', (now - startedAt) / total);
+        const total = isT ? PLANT_TIME : this.hasKit ? DEFUSE_TIME_KIT : DEFUSE_TIME;
+        this.hud.setProgress(isT ? 'Закладка бомбы…' : this.hasKit ? 'Обезвреживание с набором…' : 'Обезвреживание…', (now - startedAt) / total);
       } else {
         (this as any)._useStart = undefined;
         this.hud.setProgress('', null);
@@ -1471,7 +1523,7 @@ export class Game {
       const key = `${this.money}|${this.canBuyLocal()}`;
       if ((this as any)._buyKey !== key) {
         (this as any)._buyKey = key;
-        this.hud.showBuy(true, this.money, this.canBuyLocal());
+        this.hud.showBuy(true, this.money, this.canBuyLocal(), this.myTeam);
       }
     }
     // миникарта
@@ -1489,6 +1541,11 @@ export class Game {
     const myYaw = this.predAlive ? this.yaw : this.camera.rotation.y;
     this.hud.drawMinimap(cp.x, cp.z, myYaw, dots, b && b.p && (b.s === 'dropped' || b.s === 'planted' || b.s === 'carried') ? { x: b.p[0], z: b.p[2], planted: b.s === 'planted' } : null);
     void viewDirection;
+  }
+
+  /** Только для разработки: время перестройки чанка со сколами, мс */
+  get chipRebuildMs(): number {
+    return this.mapRenderer.lastRebuildMs;
   }
 
   /** Только для разработки: манекен перед камерой — раны, разлёт головы, рэгдолл. */

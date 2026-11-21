@@ -14,7 +14,8 @@
     "start": "node dist/server/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:bots": "tsx tools/botmatch.ts",
-    "test:duel": "tsx tools/duel.ts"
+    "test:duel": "tsx tools/duel.ts",
+    "test:zones": "tsx tools/zones.ts"
   },
   "engines": {
     "node": ">=22"

@@ -217,6 +217,7 @@ export interface PublicPlayer {
   sk: number; // раскраска
   c: boolean; // подключён (для людей)
   bomb: boolean;
+  kit: boolean; // набор сапёра (видят свои)
 }
 
 export interface RoomState {
@@ -253,6 +254,7 @@ export type GameEvent =
   | { e: 'boom'; id: number; type: number; p: [number, number, number] }
   | { e: 'flash'; v: number; dur: number }
   | { e: 'pickup'; s: number; w: number }
+  | { e: 'chip'; c: number[] }
   | { e: 'vote' }
   | { e: 'mapChosen'; map: string; votes: number }
   | { e: 'chat'; n: string; t: number; text: string; dead: boolean }
@@ -269,13 +271,15 @@ export interface FullState {
   wounds: Array<{ i: number; ops: number[] }>; // плоский массив p,x,y,z,r,x2
   tracers: boolean;
   smokes: Array<{ x: number; y: number; z: number; left: number }>;
+  /** сколы стен за раунд: по 10 чисел на операцию */
+  chips: number[];
 }
 
 export type ServerMsg =
   | RoomState
   | FullState
   | { t: 'ev'; e: GameEvent[] }
-  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: [number, number, number] }
+  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: [number, number, number]; kit: boolean }
   | { t: 'err'; msg: string }
   | { t: 'kick'; msg: string }
   | { t: 'pong'; c: number };

@@ -3,6 +3,7 @@
 
 import {
   ARMOR_PRICE,
+  KIT_PRICE,
   HELMET_PRICE,
   MAT,
   SLOT_KNIFE,
@@ -167,7 +168,7 @@ export class Hud {
       el('span', 'vote-count', card, `${st!.votes[m.id] ?? 0} гол.`);
       card.onclick = () => onVote(m.id);
     });
-    el('div', 'buy-hint', this.voteEl, 'Клавиши 1–3 или клик · при ничьей выбирается случайная карта из лидеров');
+    el('div', 'buy-hint', this.voteEl, 'Клавиши 1–5 или клик · при ничьей выбирается случайная карта из лидеров');
   }
 
   private renderMapImage(): HTMLCanvasElement {
@@ -416,7 +417,7 @@ export class Hud {
       for (const h of ['Игрок', 'Убийства', 'Смерти', 'Деньги']) el('th', '', hr, h);
       for (const p of st.pl.filter((q) => q.t === team).sort((a, b) => b.k - a.k)) {
         const tr = el('tr', (p.a ? '' : 'dead') + (p.i === myId ? ' me' : ''), tbl);
-        el('td', '', tr, p.n + (p.c ? '' : ' (откл.)') + (p.bomb ? ' 💣' : ''));
+        el('td', '', tr, p.n + (p.c ? '' : ' (откл.)') + (p.bomb ? ' 💣' : '') + (p.kit ? ' ✚' : ''));
         el('td', '', tr, String(p.k));
         el('td', '', tr, String(p.d));
         el('td', '', tr, p.m >= 0 ? '$' + p.m : '');
@@ -424,7 +425,7 @@ export class Hud {
     }
   }
 
-  showBuy(show: boolean, money: number, canBuy: boolean) {
+  showBuy(show: boolean, money: number, canBuy: boolean, team = -1) {
     this.buyMenu.style.display = show ? 'grid' : 'none';
     if (!show) return;
     this.buyMenu.innerHTML = '';
@@ -438,6 +439,7 @@ export class Hud {
           { key: 'armor', name: 'Бронежилет', price: ARMOR_PRICE },
           { key: 'helmet', name: 'Броня и шлем', price: HELMET_PRICE },
           ...WEAPONS.filter((w) => w.kind === 'grenade').map((w) => ({ key: w.key, name: w.name + ' граната', price: w.price })),
+          ...(team === 1 ? [{ key: 'kit', name: 'Набор сапёра (5 с)', price: KIT_PRICE }] : []),
         ],
       },
     ];
@@ -450,7 +452,7 @@ export class Hud {
       el('div', 'buy-col-title', col, c.title);
       for (const it of c.items) {
         const b = el('button', 'buy-item' + (money < it.price ? ' poor' : ''), col);
-        el('span', 'slot-key', b, String(hot));
+        el('span', 'slot-key', b, hot <= 9 ? String(hot) : '');
         el('span', 'buy-name', b, it.name);
         el('span', 'buy-price', b, '$' + it.price);
         b.dataset.hot = String(hot++);
@@ -471,7 +473,7 @@ export class Hud {
   }
 }
 
-export function slotList(primary: number | null, pistol: number, active: number, nades: [number, number, number] = [0, 0, 0]) {
+export function slotList(primary: number | null, pistol: number, active: number, nades: [number, number, number] = [0, 0, 0], kit = false) {
   const out: Array<{ slot: number; name: string; active: boolean; key?: string }> = [];
   if (primary !== null) out.push({ slot: SLOT_PRIMARY, name: WEAPONS[primary].name, active: active === SLOT_PRIMARY });
   out.push({ slot: SLOT_PISTOL, name: WEAPONS[pistol].name, active: active === SLOT_PISTOL });
@@ -479,5 +481,6 @@ export function slotList(primary: number | null, pistol: number, active: number,
   nades.forEach((n, i) => {
     if (n > 0) out.push({ slot: 3 + i, key: '4', name: WEAPONS[7 + i].name + (n > 1 ? ` ×${n}` : ''), active: active === 3 + i });
   });
+  if (kit) out.push({ slot: 9, key: '✚', name: 'Набор сапёра', active: false });
   return out;
 }

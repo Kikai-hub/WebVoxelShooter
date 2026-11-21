@@ -3,6 +3,7 @@
 
 import { Rng } from './rng';
 import { FLOOR, MAT, VoxelMap, archX, buildMarketSquare, crate, palm, wall, type MapInfo, type Rect } from './map';
+import { buildCaravanserai, buildMedina } from './maps2';
 
 /** Скала из столбиков разной высоты (детерминированно по зерну). */
 function rock(m: VoxelMap, rng: Rng, x0: number, z0: number, x1: number, z1: number, hMin: number, hMax: number, mat: number = MAT.ROCK) {
@@ -253,10 +254,14 @@ export const MAPS: Record<string, () => MapInfo> = {
   market: buildMarketSquare,
   wasteland: buildWasteland,
   quarter: buildOldQuarter,
+  caravan: buildCaravanserai,
+  medina: buildMedina,
 };
 
 export const MAP_LIST = [
   { id: 'market', name: 'Рыночная площадь', desc: 'Средняя дистанция, сильный центр' },
   { id: 'wasteland', name: 'Пустошь', desc: 'Открытая, дальние дистанции' },
   { id: 'quarter', name: 'Старый квартал', desc: 'Тесная, ближний бой' },
+  { id: 'caravan', name: 'Караван-сарай', desc: 'Большая: галерея, туннель, двор с колодцем' },
+  { id: 'medina', name: 'Медина', desc: 'Большая: переулок, крытый базар, длинная улица' },
 ];

@@ -143,6 +143,8 @@ export class Bot {
     if (p.money >= 1000 && p.armor < 100) r.buy(p, 'helmet');
     else if (p.money >= 650 && p.armor < 100) r.buy(p, 'armor');
     if (!p.primary && p.money >= 700 && p.pistol.def.key === 'osa' && this.rng.next() < 0.5) r.buy(p, 'gyurza');
+    // защитник с оружием почти всегда берёт набор сапёра
+    if (p.team === TEAM_CT && p.primary && p.money >= 400 && this.rng.next() < 0.7) r.buy(p, 'kit');
     // гранаты — на оставшиеся деньги, не всегда
     if (p.primary) {
       const wish: Array<[string, number]> =

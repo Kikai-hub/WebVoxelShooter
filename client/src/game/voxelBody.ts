@@ -19,7 +19,7 @@ import {
   hash32,
 } from '../../../shared/src/index';
 import type { Debris } from './debris';
-import { Ragdoll } from './ragdoll';
+import { LIMB_SPLIT, Ragdoll, SEG_COUNT } from './ragdoll';
 
 const FLESH = 0x5a0f0f;
 const WOUND_RING = 0x7a0d0d;
@@ -100,6 +100,9 @@ interface PartMesh {
   alive: Uint8Array;
   shown: Uint8Array;
   colors: Uint32Array;
+  /** для рук и ног: воксели ниже split (предплечье, голень) поворачиваются вокруг сустава */
+  split: number;
+  bend: THREE.Matrix4 | null;
 }
 type InstancedMesh = THREE.InstancedMesh;
 
@@ -131,7 +134,7 @@ export class VoxelBody {
       const mesh = new THREE.InstancedMesh(sharedGeo, material, count);
       mesh.matrixAutoUpdate = false;
       mesh.frustumCulled = false;
-      const pm: PartMesh = { mesh, nx, ny, nz, alive: new Uint8Array(count).fill(1), shown: new Uint8Array(count), colors: new Uint32Array(count) };
+      const pm: PartMesh = { mesh, nx, ny, nz, alive: new Uint8Array(count).fill(1), shown: new Uint8Array(count), colors: new Uint32Array(count), split: LIMB_SPLIT[p] ?? 0, bend: null };
       for (let z = 0; z < nz; z++)
         for (let y = 0; y < ny; y++)
           for (let x = 0; x < nx; x++) {
@@ -166,31 +169,81 @@ export class VoxelBody {
     (this.gun.material as THREE.MeshLambertMaterial).color.set(GUN_COLORS[kind] ?? 0x333333).multiply(new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.4));
   }
 
-  /** Применить позу (массив из computePose или рэгдолла) к мешам частей. */
+  private poseMatrix(pose: Float32Array, i: number, out: THREE.Matrix4): THREE.Matrix4 {
+    const o = i * POSE_STRIDE;
+    out.set(pose[o + 3], pose[o + 4], pose[o + 5], pose[o], pose[o + 6], pose[o + 7], pose[o + 8], pose[o + 1], pose[o + 9], pose[o + 10], pose[o + 11], pose[o + 2], 0, 0, 0, 1);
+    const sy = pose[o + 12];
+    if (sy !== 1) out.multiply(this.m4.makeScale(1, sy, 1));
+    return out;
+  }
+
+  /** Матрица вокселя внутри части (с учётом сгиба в суставе). */
+  private voxelMatrix(pm: PartMesh, x: number, y: number, z: number, out: THREE.Matrix4): THREE.Matrix4 {
+    out.makeTranslation((x + 0.5) * BVOX - (pm.nx * BVOX) / 2, (y + 0.5) * BVOX - (pm.ny * BVOX) / 2, (z + 0.5) * BVOX - (pm.nz * BVOX) / 2);
+    if (pm.bend && y < pm.split) out.premultiply(pm.bend);
+    return out;
+  }
+
+  /** Применить позу живого игрока (6 частей, конечности прямые). */
   applyPose(pose: Float32Array) {
     for (let p = 0; p < PART_COUNT; p++) {
-      const o = p * POSE_STRIDE;
-      const mesh = this.parts[p].mesh;
-      this.rot.set(pose[o + 3], pose[o + 4], pose[o + 5], pose[o], pose[o + 6], pose[o + 7], pose[o + 8], pose[o + 1], pose[o + 9], pose[o + 10], pose[o + 11], pose[o + 2], 0, 0, 0, 1);
-      const sy = pose[o + 12];
-      if (sy !== 1) this.rot.multiply(this.m4.makeScale(1, sy, 1));
-      mesh.matrix.copy(this.rot);
-      mesh.matrixWorldNeedsUpdate = true;
+      const pm = this.parts[p];
+      this.poseMatrix(pose, p, pm.mesh.matrix);
+      pm.mesh.matrixWorldNeedsUpdate = true;
+      if (pm.bend) this.setBend(pm, null);
     }
+  }
+
+  private inv = new THREE.Matrix4();
+  private lower = new THREE.Matrix4();
+
+  /** Применить сегменты рэгдолла: голова, торс и по два звена на каждую конечность. */
+  applySegments(seg: Float32Array) {
+    this.poseMatrix(seg, 0, this.parts[PART_HEAD].mesh.matrix);
+    this.poseMatrix(seg, 1, this.parts[PART_TORSO].mesh.matrix);
+    this.parts[PART_HEAD].mesh.matrixWorldNeedsUpdate = true;
+    this.parts[PART_TORSO].mesh.matrixWorldNeedsUpdate = true;
+    let s = 2;
+    for (const p of [PART_ARM_L, PART_ARM_R, PART_LEG_L, PART_LEG_R]) {
+      const pm = this.parts[p];
+      this.poseMatrix(seg, s++, pm.mesh.matrix);
+      pm.mesh.matrixWorldNeedsUpdate = true;
+      // сгиб = верх⁻¹ · низ: в системе части нижнее звено повёрнуто вокруг сустава
+      this.poseMatrix(seg, s++, this.lower);
+      this.inv.copy(pm.mesh.matrix).invert();
+      this.setBend(pm, this.inv.multiply(this.lower));
+    }
+  }
+
+  private setBend(pm: PartMesh, bend: THREE.Matrix4 | null) {
+    if (bend) {
+      pm.bend ??= new THREE.Matrix4();
+      pm.bend.copy(bend);
+    } else pm.bend = null;
+    for (let z = 0; z < pm.nz; z++)
+      for (let y = 0; y < pm.split; y++)
+        for (let x = 0; x < pm.nx; x++) {
+          const i = x + pm.nx * (y + pm.ny * z);
+          if (pm.shown[i] && pm.alive[i]) pm.mesh.setMatrixAt(i, this.voxelMatrix(pm, x, y, z, this.m4));
+        }
+    pm.mesh.instanceMatrix.needsUpdate = true;
   }
 
   private localToWorld(part: number, x: number, y: number, z: number, out: THREE.Vector3): THREE.Vector3 {
     const pm = this.parts[part];
     out.set((x + 0.5) * BVOX - (pm.nx * BVOX) / 2, (y + 0.5) * BVOX - (pm.ny * BVOX) / 2, (z + 0.5) * BVOX - (pm.nz * BVOX) / 2);
+    if (pm.bend && y < pm.split) out.applyMatrix4(pm.bend);
     return out.applyMatrix4(pm.mesh.matrix);
   }
 
   private reveal(pm: PartMesh, i: number, x: number, y: number, z: number) {
     if (!pm.alive[i] || pm.shown[i]) return;
     pm.shown[i] = 1;
-    this.m4.makeTranslation((x + 0.5) * BVOX - (pm.nx * BVOX) / 2, (y + 0.5) * BVOX - (pm.ny * BVOX) / 2, (z + 0.5) * BVOX - (pm.nz * BVOX) / 2);
-    pm.mesh.setMatrixAt(i, this.m4);
+    pm.mesh.setMatrixAt(i, this.voxelMatrix(pm, x, y, z, this.m4));
   }
+
+  /** Сегменты для рэгдолла (10 штук). */
+  readonly seg = new Float32Array(SEG_COUNT * POSE_STRIDE);
 
   /** Рана: вырезает воксели в радиусе, открывает мясо, окрашивает край, брызги крови. */
   wound(part: number, cx: number, cy: number, cz: number, r: number, exit: boolean, debris: Debris | null, bloodMode: string) {

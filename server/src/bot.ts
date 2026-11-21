@@ -19,6 +19,11 @@ import {
   TEAM_CT,
   TEAM_T,
   inRect,
+  NADE_FUSE,
+  SLOT_HE,
+  stepNade,
+  throwNade,
+  eyeHeight,
   type UserCmd,
 } from '../../shared/src/index';
 import type { Player, Room } from './room';
@@ -82,6 +87,13 @@ export class Bot {
   private scanPhase = 0;
   private lastPos: [number, number] = [0, 0];
   private holding = false;
+  /** план броска гранаты: переключиться, прицелиться, бросить */
+  private throwPlan: { type: number; yaw: number; pitch: number; readyAt: number; giveUpAt: number } | null = null;
+  private turnAwayUntil = 0;
+  private turnAwayYaw = 0;
+  private lastSeenPos: [number, number, number] | null = null;
+  private lastSeenAt = -10;
+  private heUsedFor = -10;
   private strafing = false;
   private runAndGun = false;
   /** постоянное «дрожание» прицела: у среднего бота не бывает идеальной наводки */
@@ -113,6 +125,9 @@ export class Bot {
     this.role = mates.indexOf(this.p);
     this.buy();
     this.scanPhase = this.rng.next() * 6;
+    this.throwPlan = null;
+    this.turnAwayUntil = 0;
+    this.lastSeenPos = null;
   }
 
   private buy() {
@@ -128,6 +143,23 @@ export class Bot {
     if (p.money >= 1000 && p.armor < 100) r.buy(p, 'helmet');
     else if (p.money >= 650 && p.armor < 100) r.buy(p, 'armor');
     if (!p.primary && p.money >= 700 && p.pistol.def.key === 'osa' && this.rng.next() < 0.5) r.buy(p, 'gyurza');
+    // гранаты — на оставшиеся деньги, не всегда
+    if (p.primary) {
+      const wish: Array<[string, number]> =
+        p.team === TEAM_T
+          ? [
+              ['smoke', 0.45],
+              ['flash', 0.55],
+              ['he', 0.45],
+              ['flash', 0.25],
+            ]
+          : [
+              ['he', 0.5],
+              ['smoke', 0.45],
+              ['flash', 0.4],
+            ];
+      for (const [k, chance] of wish) if (p.money >= 300 && this.rng.next() < chance) r.buy(p, k);
+    }
     this.wantSlot = p.primary ? SLOT_PRIMARY : SLOT_PISTOL;
   }
 
@@ -163,10 +195,139 @@ export class Bot {
   /** Товарищ сообщил о враге: часть защитников перебрасывается на помощь. */
   callout(x: number, z: number) {
     const p = this.p;
+    // дым на место прорыва, чтобы задержать атаку
+    const dd = Math.hypot(x - p.st.x, z - p.st.z);
+    const r = this.room;
+    if (p.alive && p.nades[2] > 0 && !this.target && dd > 8 && dd < 22 && r.time - r.botUtil.ctSmokeAt > 6 && this.rng.next() < 0.5) {
+      if (this.planThrow(2, x, z, 4)) r.botUtil.ctSmokeAt = r.time;
+    }
     if (!p.alive || this.target || !this.goal || this.goal.kind !== 'hold') return;
     if (Math.hypot(x - p.st.x, z - p.st.z) < 8 || this.rng.next() > 0.8) return;
     const pt = this.room.nav.randomIn(x - 5, z - 2, x + 5, z + 6, () => this.rng.next()) ?? [x, z];
     this.setGoal(pt[0], pt[1], 'investigate', 25, yawTo(x - pt[0], z - pt[1]));
+  }
+
+  // ---------- Гранаты ----------
+
+  /** Подбор угла броска: та же физика полёта, что на сервере. Возвращает [угол, промах в метрах]. */
+  private aimThrow(type: number, tx: number, tz: number, yaw: number): [number, number] {
+    const p = this.p;
+    const map = this.room.info.map;
+    const ex = p.st.x,
+      ey = p.st.y + eyeHeight(p.st),
+      ez = p.st.z;
+    const steps = type === 2 ? 192 : Math.round(NADE_FUSE * 64);
+    let best: [number, number] = [0, Infinity];
+    let bestScore = Infinity;
+    for (let pitch = -0.35; pitch <= 1.2; pitch += 0.06) {
+      const st = throwNade(ex, ey, ez, yaw, pitch, 0, 0);
+      for (let i = 0; i < steps && !st.resting; i++) stepNade(st, map);
+      const err = Math.hypot(st.x - tx, st.z - tz);
+      // светошумовая лучше взрывается в воздухе над укрытиями
+      const score = type === 1 ? err - Math.min(st.y - p.st.y, 5) * 0.5 : err;
+      if (score < bestScore) {
+        bestScore = score;
+        best = [pitch, err];
+      }
+    }
+    return best;
+  }
+
+  /** Запланировать бросок гранаты типа type (0 — осколочная, 1 — светошумовая, 2 — дымовая) в точку. */
+  private planThrow(type: number, tx: number, tz: number, maxErr = 3.5): boolean {
+    const p = this.p;
+    if (this.throwPlan || p.nades[type] <= 0) return false;
+    const d = Math.hypot(tx - p.st.x, tz - p.st.z);
+    if (d < 5 || d > 30) return false;
+    const yaw = yawTo(tx - p.st.x, tz - p.st.z);
+    const [pitch, err] = this.aimThrow(type, tx, tz, yaw);
+    if (err > maxErr) return false;
+    const now = this.room.time;
+    // средний бот бросает не идеально
+    this.throwPlan = { type, yaw: yaw + this.rng.range(-0.05, 0.05), pitch: pitch + this.rng.range(-0.03, 0.03), readyAt: now + 0.45, giveUpAt: now + 2.5 };
+    return true;
+  }
+
+  /** Тактика гранат: решается раз в 4 тика. */
+  private considerGrenades() {
+    const r = this.room;
+    const p = this.p;
+    const now = r.time;
+    if (this.throwPlan || r.phase !== 'live' && r.phase !== 'planted') return;
+    if (now < p.blindUntil) return;
+    const info = r.info;
+    // 1) Осколочная туда, где враг только что скрылся
+    if (!this.target && p.nades[0] > 0 && this.lastSeenPos && now - this.lastSeenAt > 0.4 && now - this.lastSeenAt < 3 && this.heUsedFor !== this.lastSeenAt) {
+      this.heUsedFor = this.lastSeenAt;
+      if (this.rng.next() < 0.5) this.planThrow(0, this.lastSeenPos[0], this.lastSeenPos[2]);
+      if (this.throwPlan) return;
+    }
+    if (this.target) return;
+    const g = this.goal;
+    if (p.team === TEAM_T && g && (g.kind === 'site' || g.kind === 'plant') && r.bomb.status !== 'planted') {
+      // 2) Нападение у входа на точку: дым на подход защиты, вспышка на точку
+      const site = r.siteAt(g.x, g.z) >= 0 ? r.siteAt(g.x, g.z) : 0;
+      const s = info.sites[site];
+      const cx = (s.x0 + s.x1) / 2,
+        cz = (s.z0 + s.z1) / 2;
+      const d = Math.hypot(cx - p.st.x, cz - p.st.z);
+      const util = r.botUtil;
+      if (d < 17 && d > 7 && p.nades[2] > 0 && !util.smoke[site]) {
+        const ct = spawnCenter(info, TEAM_CT);
+        const l = Math.hypot(ct[0] - cx, ct[1] - cz) || 1;
+        // точка между центром точки и базой защиты
+        if (this.planThrow(2, cx + ((ct[0] - cx) / l) * 4, cz + ((ct[1] - cz) / l) * 4, 4)) util.smoke[site] = true;
+      } else if (d < 14 && d > 6 && p.nades[1] > 0 && util.flash[site] < 1 && now - util.lastFlash > 1.5) {
+        // вспышка ближе к входу — туда смотрят защитники, держащие точку
+        const fx = cx + (p.st.x - cx) * 0.35,
+          fz = cz + (p.st.z - cz) * 0.35;
+        if (this.planThrow(1, fx, fz, 4)) {
+          util.flash[site]++;
+          util.lastFlash = now;
+        }
+      }
+    } else if (p.team === TEAM_CT && this.heard && now - this.heard.t < 1 && g && (g.kind === 'hold' || g.kind === 'guard' || g.kind === 'investigate')) {
+      // 3) Защита слышит врага, но не видит: осколочная или вспышка на подход
+      const hd = Math.hypot(this.heard.x - p.st.x, this.heard.z - p.st.z);
+      if (hd < 20 && this.rng.next() < 0.3) {
+        if (p.nades[0] > 0 && hd > 7) this.planThrow(0, this.heard.x, this.heard.z, 3);
+        else if (p.nades[1] > 0) this.planThrow(1, this.heard.x, this.heard.z, 4);
+      }
+    }
+  }
+
+  /** Союзник бросил вспышку: отвернуться от места взрыва на время. */
+  avoidFlash(fx: number, fz: number, now: number) {
+    if (this.target) return;
+    this.turnAwayUntil = now + 2;
+    this.turnAwayYaw = yawTo(this.p.st.x - fx, this.p.st.z - fz);
+  }
+
+  /** Выполнение плана броска: стоит, держит гранату, доводит прицел и бросает. */
+  private runThrow(now: number): UserCmd | null {
+    const t = this.throwPlan;
+    if (!t) return null;
+    const p = this.p;
+    if (now > t.giveUpAt || p.nades[t.type] <= 0 || this.target) {
+      this.throwPlan = null;
+      return null;
+    }
+    this.turnToward(t.yaw, t.pitch);
+    const aimed = Math.abs(angDiff(this.yaw, t.yaw)) < 0.03 && Math.abs(this.pitch - t.pitch) < 0.03;
+    const slot = SLOT_HE + t.type;
+    if (aimed && now >= t.readyAt && p.slot === slot && p.simTime >= p.nextFire) {
+      this.throwPlan = null;
+      if (t.type === 1) {
+        // после своей вспышки — отвернуться и предупредить союзников рядом («флешка!»)
+        this.turnAwayUntil = now + 1.9;
+        this.turnAwayYaw = t.yaw + Math.PI;
+        const fx = p.st.x - Math.sin(t.yaw) * 10,
+          fz = p.st.z - Math.cos(t.yaw) * 10;
+        for (const q of this.room.players) if (q !== p && q.team === p.team && q.alive && Math.hypot(q.st.x - p.st.x, q.st.z - p.st.z) < 25) q.bot?.avoidFlash(fx, fz, now);
+      }
+      return this.cmd(BTN_FIRE, slot);
+    }
+    return this.cmd(0, slot);
   }
 
   // ---------- Мышление ----------
@@ -236,6 +397,11 @@ export class Bot {
     const r = this.room;
     const p = this.p;
     const now = r.time;
+    // ослеплён вспышкой — никого не видит
+    if (now < p.blindUntil) {
+      this.target = null;
+      return;
+    }
     let best: Player | null = null;
     let bestD = Infinity;
     const [ex, , ez] = p.eye();
@@ -271,6 +437,8 @@ export class Bot {
         this.burstLeft = 0;
       }
       this.targetLastSeen = now;
+      this.lastSeenPos = [best.st.x, best.st.y, best.st.z];
+      this.lastSeenAt = now;
     } else if (this.target && (now - this.targetLastSeen > 1.2 || !this.target.alive)) {
       // потерял цель: идёт проверить последнее место
       if (this.target.alive) this.heard = { x: this.target.st.x, z: this.target.st.z, t: now };
@@ -298,6 +466,7 @@ export class Bot {
         (this.goal.kind === 'plant' && !p.hasBomb) ||
         (p.hasBomb && this.goal.kind !== 'plant');
       if (needNew) this.pickStrategicGoal();
+      this.considerGrenades();
       // услышал — иногда идёт проверить (только если сейчас держит позицию)
       if (this.heard && !this.target && now - this.heard.t < 0.3 && this.goal && (this.goal.kind === 'hold' || this.goal.kind === 'guard') && this.rng.next() < 0.35) {
         const h = this.heard;
@@ -305,9 +474,15 @@ export class Bot {
       }
     }
 
-    // Оружие
-    let slot = this.wantSlot;
-    if (slot === SLOT_PRIMARY && !p.primary) slot = SLOT_PISTOL;
+    const thr = r.phase === 'freeze' ? null : this.runThrow(now);
+    if (thr) return thr;
+    if (now < this.turnAwayUntil && !this.target) {
+      this.turnToward(this.turnAwayYaw, -0.3);
+      return this.cmd(0, p.primary ? SLOT_PRIMARY : SLOT_PISTOL);
+    }
+
+    // Оружие: основное, если есть (в том числе подобранное с земли)
+    let slot = p.primary ? SLOT_PRIMARY : SLOT_PISTOL;
     const wi = slot === SLOT_PRIMARY ? p.primary : p.pistol;
     if (wi && wi.mag === 0 && wi.reserve === 0 && slot === SLOT_PRIMARY) slot = SLOT_PISTOL;
     if (wi && wi.mag < wi.def.mag * 0.3 && !this.target && wi.reserve > 0 && p.reloadEnd === 0) buttons |= BTN_RELOAD;

@@ -232,6 +232,8 @@ export interface RoomState {
   half: boolean;
   /** голоса за карты во время голосования */
   votes: Record<string, number>;
+  /** оружие на земле: id, оружие, позиция */
+  drops: Array<{ i: number; w: number; x: number; y: number; z: number; r: number }>;
 }
 
 /** События, которые сервер рассылает пачкой раз в тик. */
@@ -247,6 +249,10 @@ export type GameEvent =
   | { e: 'roundEnd'; w: number; why: string }
   | { e: 'matchEnd'; w: number }
   | { e: 'half' }
+  | { e: 'nade'; id: number; s: number; type: number; tick: number; p: [number, number, number]; v: [number, number, number] }
+  | { e: 'boom'; id: number; type: number; p: [number, number, number] }
+  | { e: 'flash'; v: number; dur: number }
+  | { e: 'pickup'; s: number; w: number }
   | { e: 'vote' }
   | { e: 'mapChosen'; map: string; votes: number }
   | { e: 'chat'; n: string; t: number; text: string; dead: boolean }
@@ -262,13 +268,14 @@ export interface FullState {
   corpses: Array<{ i: number; x: number; y: number; z: number; yaw: number; ex: boolean }>;
   wounds: Array<{ i: number; ops: number[] }>; // плоский массив p,x,y,z,r,x2
   tracers: boolean;
+  smokes: Array<{ x: number; y: number; z: number; left: number }>;
 }
 
 export type ServerMsg =
   | RoomState
   | FullState
   | { t: 'ev'; e: GameEvent[] }
-  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number }
+  | { t: 'me'; id: number; team: number; money: number; spectator: boolean; queue: number; pri: number; pis: number; nades: [number, number, number] }
   | { t: 'err'; msg: string }
   | { t: 'kick'; msg: string }
   | { t: 'pong'; c: number };

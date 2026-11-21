@@ -10,6 +10,8 @@ import {
   BTN_JUMP,
   BTN_LEFT,
   BTN_RELOAD,
+  BTN_DROP,
+  SMOKE_TIME,
   BTN_RIGHT,
   BTN_USE,
   DEFUSE_TIME,
@@ -64,6 +66,7 @@ import { Hud, TEAM_LABEL, slotList } from './hud';
 import { buildMapMeshes } from './mapMesh';
 import { Ragdoll } from './ragdoll';
 import { ViewModel } from './viewmodel';
+import { DropsView, NadeView, SmokeView } from './nades';
 import { VoxelBody } from './voxelBody';
 
 interface Snap {
@@ -215,6 +218,8 @@ export class Game {
     this.scene.add(this.mapGroup);
     this.debris = new Debris(this.info.map, 2000);
     this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh);
+    this.nadeView = new NadeView(() => this.info.map);
+    this.scene.add(this.nadeView.group, this.smokeView.mesh, this.dropsView.group);
 
     this.bombMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.18, 0.26), new THREE.MeshLambertMaterial({ color: 0x3b3f2a }));
     const screen = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.1), new THREE.MeshBasicMaterial({ color: 0xff2020 }));
@@ -249,6 +254,10 @@ export class Game {
 
   // ---------- Оформление ----------
 
+  private nadeView: NadeView;
+  private smokeView = new SmokeView();
+  private dropsView = new DropsView();
+  private nades: [number, number, number] = [0, 0, 0];
   private mapGroup: THREE.Group;
   private mapMaterial: THREE.Material;
   private skyGroup: THREE.Group;
@@ -269,6 +278,9 @@ export class Game {
     this.scene.add(this.mapGroup, this.skyGroup);
     this.debris.map = this.info.map;
     this.debris.clear();
+    this.nadeView.clear();
+    this.smokeView.clear();
+    this.dropsView.clear();
     this.impacts.clear();
     this.hud.setMap(this.info);
     this.hud.info(`Карта: ${this.info.name}`);
@@ -339,7 +351,7 @@ export class Game {
         <label>Громкость <input type="range" min="0" max="1" step="0.05" data-s="volume"></label>
         <label><input type="checkbox" data-s="confetti"> Режим «конфетти» вместо крови</label>
         <button data-a="exit" class="btn">Выйти в меню</button>
-        <div class="pause-hint">WASD — ход · Пробел — прыжок · C/Ctrl — присесть · E — заложить/обезвредить · R — перезарядка · 1/2/3, Q — оружие · B — покупка · Tab — счёт · Enter — чат · ПКМ — прицел снайперки</div>
+        <div class="pause-hint">WASD — ход · Пробел — прыжок · C/Ctrl — присесть · E — заложить/обезвредить · R — перезарядка · 1/2/3, Q — оружие · 4 — гранаты · G — выбросить оружие · E — подобрать · B — покупка · Tab — счёт · Enter — чат · ПКМ — прицел снайперки</div>
       </div>`;
     const inputs = this.pauseEl.querySelectorAll<HTMLInputElement>('input[data-s]');
     const sync = () => {
@@ -408,6 +420,11 @@ export class Game {
     switch (m.t) {
       case 'st':
         this.st = m;
+        if (this.pendingFull) {
+          const f = this.pendingFull;
+          this.pendingFull = null;
+          this.onFull(f);
+        }
         break;
       case 'me': {
         const wasSpec = this.spectator;
@@ -428,6 +445,8 @@ export class Game {
           this.priId = m.pri;
         }
         this.pisId = m.pis;
+        this.nades = m.nades;
+        if (this.slot >= 3 && this.nades[this.slot - 3] <= 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         if (this.slot === SLOT_PRIMARY && this.priId < 0) this.slot = SLOT_PISTOL;
         break;
       }
@@ -510,7 +529,17 @@ export class Game {
     this.predAlive = true;
   }
 
+  /** полное состояние, пришедшее раньше списка игроков (вход посреди раунда) */
+  private pendingFull: FullState | null = null;
+
   private onFull(m: FullState) {
+    // без списка игроков не знаем сторону и агента — тела строим, когда он придёт
+    if (!this.st) {
+      this.pendingFull = m;
+      this.myId = m.you;
+      this.setMap(m.map);
+      return;
+    }
     this.myId = m.you;
     this.setMap(m.map);
     // новое полное состояние (вход, новый раунд): пересобираем тела
@@ -522,6 +551,10 @@ export class Game {
     }
     this.debris.clear();
     this.impacts.clear();
+    this.nadeView.clear();
+    this.smokeView.clear();
+    const nowS = performance.now() / 1000;
+    for (const s of m.smokes ?? []) this.smokeView.add(s.x, s.y, s.z, s.left, nowS);
     for (const c of m.corpses) {
       const p = this.getPlayer(c.i);
       p.dead = true;
@@ -602,6 +635,8 @@ export class Game {
       case 'kill': {
         const p = this.getPlayer(e.v);
         p.dead = true;
+        // состояние комнаты придёт позже (4 раза в секунду) — отмечаем смерть сразу
+        if (this.st?.pl[e.v]) this.st.pl[e.v].a = false;
         const body = this.ensureBody(p);
         if (body) {
           // поза в момент смерти
@@ -615,6 +650,7 @@ export class Game {
           body.applyPose(this.pose);
           const imp: [number, number, number] = [e.d[0] * 3.5, e.d[1] * 3.5 + 0.8, e.d[2] * 3.5];
           body.ragdoll = new Ragdoll(this.info.map, this.pose, imp, e.p, e.hs);
+          body.setWeapon('none');
           if (e.ex) body.explodeHead(this.debris, e.d, this.settings.blood);
         }
         const k = this.pub(e.k),
@@ -686,6 +722,43 @@ export class Game {
         break;
       case 'info':
         this.hud.info(e.text);
+        break;
+      case 'nade': {
+        const ahead = Math.max(0, Math.round(this.latestTick - e.tick));
+        this.nadeView.spawn(e.id, e.type, e.p, e.v, ahead);
+        if (e.s !== this.myId) this.sfx.click(260, 0.06, 0.12);
+        break;
+      }
+      case 'boom': {
+        this.nadeView.remove(e.id);
+        const [x, y, z] = e.p;
+        const d = Math.hypot(x - eye.x, y - eye.y, z - eye.z);
+        if (e.type === 0) {
+          this.sfx.grenade(d);
+          for (let i = 0; i < 70; i++) {
+            const c = [0xffb03a, 0xff6a1a, 0x5a5048, 0x3a332c][i % 4];
+            this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 12, Math.random() * 9, (Math.random() - 0.5) * 12, c, 1 + Math.random() * 2, 1.8);
+          }
+          for (let i = 0; i < 14; i++) {
+            const a = Math.random() * Math.PI * 2;
+            this.markImpact([x, y + 0.2, z], [x + Math.cos(a) * 3, y - 0.6, z + Math.sin(a) * 3]);
+          }
+        } else if (e.type === 1) {
+          this.sfx.flashbang(d);
+          for (let i = 0; i < 20; i++) this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 6, Math.random() * 5, (Math.random() - 0.5) * 6, 0xffffff, 0.4, 1);
+        } else {
+          this.sfx.smoke(d);
+          this.smokeView.add(x, y, z, SMOKE_TIME, performance.now() / 1000);
+        }
+        break;
+      }
+      case 'flash': {
+        const watching = this.predAlive ? this.myId : this.specTarget;
+        if (e.v === watching) this.hud.flash(e.dur);
+        break;
+      }
+      case 'pickup':
+        if (e.s === this.myId) this.sfx.click(700, 0.05, 0.2);
         break;
       case 'reload':
         if (e.s === this.myId) {
@@ -918,6 +991,7 @@ export class Game {
     if (code === 'Digit2') this.selectSlot(SLOT_PISTOL);
     if (code === 'Digit3') this.selectSlot(SLOT_KNIFE);
     if (code === 'KeyQ') this.selectSlot(this.lastSlot);
+    if (code === 'Digit4') this.cycleGrenade();
     this.keys.add(code);
     this.tapped.add(code);
   };
@@ -939,6 +1013,14 @@ export class Game {
   private canBuyLocal(): boolean {
     if (!this.st || !this.predAlive || this.myTeam < 0) return false;
     return (this.st.ph === 'freeze' || this.st.ph === 'live') && inRect(this.info.spawnZones[this.myTeam], this.pred.x, this.pred.z);
+  }
+
+  /** 4 — по кругу между гранатами, которые есть. */
+  private cycleGrenade() {
+    const have = [3, 4, 5].filter((s) => this.nades[s - 3] > 0);
+    if (!have.length) return;
+    const i = have.indexOf(this.slot);
+    this.selectSlot(have[(i + 1) % have.length]);
   }
 
   private selectSlot(s: number) {
@@ -979,6 +1061,7 @@ export class Game {
     if (k.has('KeyC') || k.has('ControlLeft') || k.has('ControlRight')) b |= BTN_CROUCH;
     if (k.has('KeyE')) b |= BTN_USE;
     if (k.has('KeyR')) b |= BTN_RELOAD;
+    if (k.has('KeyG')) b |= BTN_DROP;
     if (this.mouseDown || this.fireTap) b |= BTN_FIRE;
     return b;
   }
@@ -1021,6 +1104,16 @@ export class Game {
     const def = WEAPONS[own.weapon];
     if (!def || own.flags & SF_RELOADING) return;
     if (this.simTime < this.localNextFire) return;
+    if (def.kind === 'grenade') {
+      if (this.lastButtons & BTN_FIRE || this.slot < 3) return;
+      this.localNextFire = this.simTime + 0.8;
+      this.vm.fire();
+      this.sfx.click(300, 0.06, 0.15);
+      const t = this.slot - 3;
+      this.nades[t] = Math.max(0, this.nades[t] - 1);
+      if (this.nades[t] === 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
+      return;
+    }
     if (!def.auto && this.lastButtons & BTN_FIRE) return;
     if (def.kind !== 'knife' && own.mag <= 0) return;
     if (this.slot !== def.slot) return;
@@ -1134,6 +1227,9 @@ export class Game {
     this.updatePlayers(dt);
     this.updateCamera(alpha);
     this.debris.update(dt);
+    this.nadeView.update(dt);
+    this.smokeView.update(now);
+    this.dropsView.sync(this.st?.drops ?? [], now);
     this.tracers.update(dt);
     this.updateBomb(now);
     this.updateHud(now);
@@ -1199,10 +1295,8 @@ export class Game {
           }
           body.group.visible = true;
         }
-        if (info && info.a && !isMe) {
-          // ожил (новый раунд без полного состояния)
-          p.dead = false;
-        } else continue;
+        // труп лежит до конца раунда: «оживить» тело может только полное состояние нового раунда
+        continue;
       }
       if (!info) continue;
       if (isMe) {
@@ -1350,7 +1444,7 @@ export class Game {
     if (own && own.present) {
       this.hud.setVitals(own.hp, own.armor, alive);
       const def = WEAPONS[own.weapon];
-      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot), (own.flags & SF_RELOADING) !== 0);
+      this.hud.setWeapon(own.weapon, own.mag, own.reserve, slotList(this.priId >= 0 ? this.priId : null, this.pisId, def?.slot ?? this.slot, this.nades), (own.flags & SF_RELOADING) !== 0);
       // прогресс закладки/обезвреживания
       if (own.flags & SF_USING && alive) {
         const isT = this.myTeam === 0;

@@ -261,6 +261,7 @@ function renderInventory(body: HTMLElement, center: HTMLElement, canvas: HTMLCan
     ['pistol', 'Пистолеты'],
     ['primary', 'Основное'],
     ['knife', 'Нож'],
+    ['grenade', 'Гранаты'],
     ['agents', 'Агенты'],
   ];
   let filter = 'all';
@@ -297,9 +298,9 @@ function renderInventory(body: HTMLElement, center: HTMLElement, canvas: HTMLCan
         });
     }
     for (const w of WEAPONS) {
-      const cat = w.kind === 'knife' ? 'knife' : w.slot === SLOT_PISTOL ? 'pistol' : 'primary';
+      const cat = w.kind === 'knife' ? 'knife' : w.kind === 'grenade' ? 'grenade' : w.slot === SLOT_PISTOL ? 'pistol' : 'primary';
       if (filter !== 'all' && filter !== cat) continue;
-      const it = h('button', { class: 'item' }, h('b', {}, w.name), h('span', {}, ({ knife: 'Нож', pistol: 'Пистолет', smg: 'Пистолет-пулемёт', shotgun: 'Дробовик', rifle: 'Винтовка', sniper: 'Снайперская' } as Record<string, string>)[w.kind]));
+      const it = h('button', { class: 'item' }, h('b', {}, w.name), h('span', {}, ({ knife: 'Нож', pistol: 'Пистолет', smg: 'Пистолет-пулемёт', shotgun: 'Дробовик', rifle: 'Винтовка', sniper: 'Снайперская', grenade: 'Граната' } as Record<string, string>)[w.kind]));
       const sw = h('div', { class: 'swatches' });
       for (const s of SKINS) sw.append(Object.assign(h('i'), { style: `background:#${s.tint.toString(16).padStart(6, '0')}`, title: s.name } as any));
       it.append(sw);

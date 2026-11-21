@@ -1046,3 +1046,11 @@ input {
   font-family: var(--wide);
   color: var(--accent);
 }
+
+.flashbang {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+}

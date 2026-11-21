@@ -100,6 +100,38 @@ export class Sfx {
     src.start(t, Math.random() * 0.3, 0.09);
   }
 
+  private noiseBurst(dur: number, freq: number, vol: number, type: BiquadFilterType = 'lowpass') {
+    const ctx = this.ensure();
+    if (!ctx || !this.noise) return;
+    const t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f).connect(g).connect(this.master!);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+
+  grenade(dist: number) {
+    this.noiseBurst(1.1, 900 / (1 + dist * 0.03), Math.max(0.08, 1 / (1 + dist * 0.08)));
+  }
+
+  flashbang(dist: number) {
+    const v = Math.max(0.06, 0.8 / (1 + dist * 0.08));
+    this.noiseBurst(0.35, 4000, v, 'highpass');
+    this.click(3800, 0.9, v * 0.25);
+  }
+
+  smoke(dist: number) {
+    this.noiseBurst(2.5, 2500, Math.max(0.03, 0.25 / (1 + dist * 0.1)), 'bandpass');
+  }
+
   beep() {
     this.click(1500, 0.08, 0.2);
   }

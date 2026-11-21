@@ -5,6 +5,23 @@ import {
   ARMOR_PRICE,
   BOMB_TIMER,
   BTN_FIRE,
+  BTN_DROP,
+  FLASH_RANGE,
+  HE_MAX_DAMAGE,
+  HE_RADIUS,
+  MAX_DROPS,
+  NADE_FUSE,
+  NADE_LIMIT,
+  NADE_TYPES,
+  SLOT_HE,
+  SMOKE_TIME,
+  PART_LEG_L,
+  VOXEL,
+  smokeBlocks,
+  stepNade,
+  throwNade,
+  type NadeState,
+  type Smoke,
   BTN_RELOAD,
   BTN_USE,
   BUY_TIME,
@@ -174,10 +191,18 @@ export class Player {
     this.team = team;
   }
 
+  /** гранаты: осколочные, светошумовые, дымовые */
+  nades: [number, number, number] = [0, 0, 0];
+  blindUntil = 0;
+
   get weapon(): WeaponDef {
     if (this.slot === SLOT_PRIMARY && this.primary) return this.primary.def;
     if (this.slot === SLOT_PISTOL) return this.pistol.def;
+    if (this.slot >= SLOT_HE && this.slot <= SLOT_HE + 2) return WEAPONS[7 + this.slot - SLOT_HE];
     return KNIFE;
+  }
+  get gunSlot(): number {
+    return this.primary ? SLOT_PRIMARY : SLOT_PISTOL;
   }
   get weaponInst(): WeaponInst | null {
     if (this.slot === SLOT_PRIMARY) return this.primary;
@@ -228,11 +253,18 @@ export class Room {
   private bodyHit = newBodyHit();
   private mapHit = newMapHit();
   private dir: [number, number, number] = [0, 0, 0];
+  /** летящие гранаты */
+  nadesInFlight: Array<{ id: number; owner: number; team: Team; type: number; st: NadeState; thrownAt: number }> = [];
+  smokes: Smoke[] = [];
+  /** оружие на земле */
+  drops: Array<{ id: number; inst: WeaponInst; x: number; y: number; z: number; r: number }> = [];
+  private nextNadeId = 1;
+  private nextDropId = 1;
   private lastStateSent = 0;
   draining = false;
   onDrained: (() => void) | null = null;
   /** статистика для теста ботов */
-  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number> };
+  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0] as [number, number, number], nadeKills: 0, blinded: 0 };
   tickTimeMs = 0;
 
   constructor(
@@ -288,6 +320,10 @@ export class Room {
         own.conn.close('Вход с другого устройства');
       }
       own.conn = conn;
+      // новое подключение нумерует команды заново
+      own.lastSeq = 0;
+      own.cmdQueue.length = 0;
+      own.lastButtons = 0;
       conn.slot = own.id;
       this.sendFull(conn);
       this.events.push({ e: 'info', text: `${conn.login} вернулся в игру` });
@@ -437,6 +473,14 @@ export class Room {
 
   buy(p: Player, item: string): boolean {
     if (!this.canBuy(p)) return false;
+    const nt = NADE_TYPES.indexOf(item as (typeof NADE_TYPES)[number]);
+    if (nt >= 0) {
+      const def = WEAPON_BY_KEY[item];
+      if (p.nades[nt] >= NADE_LIMIT[NADE_TYPES[nt]] || p.money < def.price) return false;
+      p.money -= def.price;
+      p.nades[nt]++;
+      return true;
+    }
     if (item === 'armor') {
       if (p.armor >= 100 || p.money < ARMOR_PRICE) return false;
       p.money -= ARMOR_PRICE;
@@ -470,6 +514,8 @@ export class Room {
 
   // ---------- Голосование за карту ----------
 
+  /** гранаты ботов нападения за раунд: кто уже закрыл дымом точку и сколько вспышек ушло */
+  botUtil = { smoke: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
   /** для тестов: всегда эта карта */
   lockMap: string | null = null;
   /** голос аккаунта → id карты */
@@ -524,6 +570,7 @@ export class Room {
       p.helmet = false;
       p.kills = 0;
       p.deaths = 0;
+      p.nades = [0, 0, 0];
     }
     // команды по слотам: первая половина — нападение
     for (const p of this.players) p.team = p.id < TEAM_SIZE ? TEAM_T : TEAM_CT;
@@ -552,6 +599,10 @@ export class Room {
     this.fillFromQueue();
 
     this.bomb = { status: 'none', carrier: -1, x: 0, y: 0, z: 0, site: -1, explodeAt: 0, defuser: -1 };
+    this.nadesInFlight = [];
+    this.smokes = [];
+    this.drops = [];
+    this.botUtil = { smoke: [false, false], flash: [0, 0], lastFlash: -10, ctSmokeAt: -10 };
     const spawnIdx = [0, 0];
     const order = [...this.info.spawns[0].keys()];
     const shuffled: [number[], number[]] = [this.shuffle(order.slice()), this.shuffle(order.slice())];
@@ -577,6 +628,7 @@ export class Room {
       p.pistol.mag = p.pistol.def.mag;
       p.pistol.reserve = p.pistol.def.reserve;
       p.visUntil.fill(0);
+      p.blindUntil = 0;
       p.cmdQueue.length = 0;
     }
     const ts = this.players.filter((p) => p.team === TEAM_T);
@@ -806,6 +858,8 @@ export class Room {
         p.reloadEnd = 0;
       }
     }
+    this.updateNades();
+    this.updateDrops();
     this.recordHistory();
     this.updateRound();
     this.flushEvents();
@@ -831,9 +885,11 @@ export class Room {
     stepPlayer(p.st, cmd.buttons, p.yaw, this.info.map, canMove, p.weapon.speed);
     p.recoil *= Math.exp(-DT * 6);
 
-    // Смена оружия
-    if (cmd.slot !== p.slot && cmd.slot <= SLOT_KNIFE) {
-      if (cmd.slot !== SLOT_PRIMARY || p.primary) {
+    // Смена оружия (гранаты — только если они есть)
+    if (p.slot >= SLOT_HE && p.nades[p.slot - SLOT_HE] <= 0) p.slot = p.gunSlot;
+    if (cmd.slot !== p.slot && cmd.slot <= SLOT_HE + 2) {
+      const ok = cmd.slot >= SLOT_HE ? p.nades[cmd.slot - SLOT_HE] > 0 : cmd.slot !== SLOT_PRIMARY || !!p.primary;
+      if (ok) {
         p.slot = cmd.slot;
         p.reloadEnd = 0;
         p.nextFire = Math.max(p.nextFire, p.simTime + 0.35);
@@ -845,6 +901,16 @@ export class Room {
     if (cmd.buttons & BTN_RELOAD && wi && p.reloadEnd === 0 && wi.mag < def.mag && wi.reserve > 0) {
       p.reloadEnd = p.simTime + def.reload;
       this.events.push({ e: 'reload', s: p.id });
+    }
+    const pressed = cmd.buttons & ~p.lastButtons;
+    // Выбросить оружие (G) и подобрать с земли (E)
+    if (pressed & BTN_DROP) this.dropWeapon(p, true);
+    if (pressed & BTN_USE) this.tryPickup(p);
+    // Бросок гранаты
+    if (def.kind === 'grenade') {
+      if (pressed & BTN_FIRE && this.phase !== 'freeze' && this.phase !== 'vote' && p.simTime >= p.nextFire) this.throwGrenade(p);
+      p.lastButtons = cmd.buttons;
+      return;
     }
     // Стрельба
     if (cmd.buttons & BTN_FIRE && this.phase !== 'freeze' && this.phase !== 'vote' && p.reloadEnd === 0 && p.simTime >= p.nextFire && !(cmd.buttons & BTN_USE)) {
@@ -944,14 +1010,21 @@ export class Room {
       const explode = hs && rand01(this.tick * 7919 + victim.id * 31 + (attacker?.id ?? 0)) < HEAD_EXPLODE_CHANCE;
       victim.exploded = explode;
       this.stats.kills++;
+      if (def.kind === 'grenade') this.stats.nadeKills++;
       if (hs) this.stats.headshots++;
       if (explode) this.stats.explodes++;
       if (attacker && attacker !== victim) {
         attacker.kills++;
         attacker.money = Math.min(MAX_MONEY, attacker.money + def.killReward);
       }
+      // оружие падает на землю: основное, а если его нет — купленный пистолет
+      if (victim.primary) {
+        victim.slot = SLOT_PRIMARY;
+        this.dropWeapon(victim, false);
+      } else if (victim.pistol.def !== DEFAULT_PISTOL) this.addDrop(victim.pistol, victim.st.x, victim.st.y, victim.st.z);
       victim.primary = null;
       victim.pistol = inst(DEFAULT_PISTOL);
+      victim.nades = [0, 0, 0];
       victim.armor = 0;
       victim.helmet = false;
       this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
@@ -965,6 +1038,182 @@ export class Room {
         this.bomb.z = victim.st.z;
       }
       this.checkElimination();
+    }
+  }
+
+  // ---------- Гранаты ----------
+
+  private throwGrenade(p: Player) {
+    const type = p.slot - SLOT_HE;
+    if (p.nades[type] <= 0) return;
+    p.nades[type]--;
+    p.nextFire = p.simTime + 0.8;
+    const [ex, ey, ez] = p.eye();
+    const st = throwNade(ex, ey, ez, p.yaw, p.pitch, p.st.vx, p.st.vz);
+    const n = { id: this.nextNadeId++, owner: p.id, team: p.team, type, st, thrownAt: this.time };
+    this.nadesInFlight.push(n);
+    this.stats.nades[type]++;
+    this.events.push({ e: 'nade', id: n.id, s: p.id, type, tick: this.tick, p: [st.x, st.y, st.z], v: [st.vx, st.vy, st.vz] });
+    // после броска — снова оружие, если гранат этого типа больше нет
+    if (p.nades[type] <= 0) p.slot = p.gunSlot;
+    for (const q of this.players) q.bot?.hear(ex, ez, 20, p);
+  }
+
+  private updateNades() {
+    const now = this.time;
+    for (let i = this.nadesInFlight.length - 1; i >= 0; i--) {
+      const n = this.nadesInFlight[i];
+      stepNade(n.st, this.info.map);
+      const age = now - n.thrownAt;
+      const pop = n.type === 2 ? (n.st.resting && age > 0.5) || age > 3 : age >= NADE_FUSE;
+      if (!pop) continue;
+      this.nadesInFlight.splice(i, 1);
+      const { x, y, z } = n.st;
+      this.events.push({ e: 'boom', id: n.id, type: n.type, p: [x, y, z] });
+      const owner = this.players[n.owner];
+      if (n.type === 0) this.explodeHE(owner, n.team, x, y, z);
+      else if (n.type === 1) this.explodeFlash(x, y, z);
+      else this.smokes.push({ x, y, z, start: now, end: now + SMOKE_TIME });
+      for (const q of this.players) q.bot?.hear(x, z, 30, owner);
+    }
+    if (this.smokes.length) this.smokes = this.smokes.filter((s) => s.end > now);
+  }
+
+  private explodeHE(owner: Player, team: Team, x: number, y: number, z: number) {
+    const def = WEAPON_BY_KEY.he;
+    for (const v of this.players) {
+      if (!v.alive || v.team === team) continue;
+      const dx = v.st.x - x,
+        dz = v.st.z - z,
+        cy = v.st.y + 1.0;
+      const d = Math.hypot(dx, cy - y, dz);
+      if (d > HE_RADIUS || !lineOfSight(this.info.map, x, y + 0.3, z, v.st.x, cy, v.st.z)) continue;
+      const dmg = HE_MAX_DAMAGE * (1 - d / HE_RADIUS);
+      if (dmg < 1) continue;
+      // осколки: несколько ран на стороне тела, обращённой к взрыву (перед тела — z = 0)
+      const frontToBlast = -Math.sin(v.yaw) * -dx + -Math.cos(v.yaw) * -dz > 0;
+      for (let k = 0; k < 3 && v.wounds.length / 6 < MAX_WOUNDS; k++) {
+        const leg = k === 2;
+        const part = leg ? PART_LEG_L + this.rng.int(2) : PART_TORSO;
+        const px = leg ? this.rng.int(4) : this.rng.int(8);
+        const py = leg ? this.rng.int(13) : this.rng.int(11);
+        const pz = frontToBlast ? 0 : leg ? 3 : 4;
+        v.wounds.push(part, px, py, pz, 1, 0);
+        this.events.push({ e: 'wound', v: v.id, p: part, x: px, y: py, z: pz, r: 1, x2: 0 });
+      }
+      const l = Math.max(0.01, Math.hypot(dx, dz));
+      this.damage(v, owner, dmg, PART_TORSO, [dx / l, 0.4, dz / l], def, [x, y, z]);
+    }
+  }
+
+  private explodeFlash(x: number, y: number, z: number) {
+    for (const v of this.players) {
+      if (!v.alive) continue;
+      const [ex, ey, ez] = v.eye();
+      const dx = x - ex,
+        dy = y + 0.2 - ey,
+        dz = z - ez;
+      const d = Math.hypot(dx, dy, dz);
+      if (d > FLASH_RANGE || !lineOfSight(this.info.map, x, y + 0.2, z, ex, ey, ez) || smokeBlocks(this.smokes, this.time, x, y + 0.2, z, ex, ey, ez)) continue;
+      // насколько вспышка перед глазами
+      const cp = Math.cos(v.pitch);
+      const dot = (-Math.sin(v.yaw) * cp * dx + Math.sin(v.pitch) * dy - Math.cos(v.yaw) * cp * dz) / Math.max(d, 0.01);
+      const base = dot > 0.5 ? 3 : dot > 0 ? 1.6 : 0.5;
+      const dur = base * (1 - (d / FLASH_RANGE) * 0.6);
+      v.blindUntil = Math.max(v.blindUntil, this.time + dur);
+      if (dur > 1) this.stats.blinded++;
+      this.events.push({ e: 'flash', v: v.id, dur });
+    }
+  }
+
+  // ---------- Оружие на земле ----------
+
+  /** Высота пола под точкой. */
+  private floorAt(x: number, y: number, z: number): number {
+    const m = this.info.map;
+    let vy = Math.floor((y + 0.4) / VOXEL);
+    const vx = Math.floor(x / VOXEL),
+      vz = Math.floor(z / VOXEL);
+    while (vy > 0 && m.get(vx, vy - 1, vz) === 0) vy--;
+    return vy * VOXEL;
+  }
+
+  private addDrop(inst: WeaponInst, x: number, y: number, z: number) {
+    if (this.info.map.solidAt(x, y + 0.6, z)) return;
+    this.drops.push({ id: this.nextDropId++, inst, x, y: this.floorAt(x, y, z), z, r: this.rng.next() * Math.PI * 2 });
+    if (this.drops.length > MAX_DROPS) this.drops.shift();
+  }
+
+  /** Выбросить оружие в руках (основное или купленный пистолет). manual — вперёд по взгляду. */
+  dropWeapon(p: Player, manual: boolean) {
+    let inst: WeaponInst | null = null;
+    if (p.slot === SLOT_PRIMARY && p.primary) {
+      inst = p.primary;
+      p.primary = null;
+    } else if (p.slot === SLOT_PISTOL && manual && p.pistol.def !== DEFAULT_PISTOL) {
+      inst = p.pistol;
+      p.pistol = { def: DEFAULT_PISTOL, mag: DEFAULT_PISTOL.mag, reserve: 0 };
+    }
+    if (!inst) return;
+    const fx = -Math.sin(p.yaw),
+      fz = -Math.cos(p.yaw);
+    let x = p.st.x + (manual ? fx * 1.3 : (this.rng.next() - 0.5) * 0.6),
+      z = p.st.z + (manual ? fz * 1.3 : (this.rng.next() - 0.5) * 0.6);
+    if (this.info.map.solidAt(x, p.st.y + 0.6, z)) {
+      x = p.st.x;
+      z = p.st.z;
+    }
+    this.addDrop(inst, x, p.st.y, z);
+    if (p.slot === SLOT_PRIMARY) p.slot = SLOT_PISTOL;
+    p.reloadEnd = 0;
+  }
+
+  private takeDrop(p: Player, idx: number) {
+    const d = this.drops[idx];
+    this.drops.splice(idx, 1);
+    if (d.inst.def.slot === SLOT_PRIMARY) {
+      if (p.primary) this.addDrop(p.primary, d.x, d.y, d.z);
+      p.primary = d.inst;
+      p.slot = SLOT_PRIMARY;
+    } else {
+      if (p.pistol.def !== DEFAULT_PISTOL) this.addDrop(p.pistol, d.x, d.y, d.z);
+      p.pistol = d.inst;
+      p.slot = SLOT_PISTOL;
+    }
+    p.reloadEnd = 0;
+    this.events.push({ e: 'pickup', s: p.id, w: d.inst.def.id });
+  }
+
+  /** E рядом с оружием на земле: обмен на оружие того же слота. */
+  private tryPickup(p: Player) {
+    if (!p.alive) return;
+    if (p.hasBomb && this.siteAt(p.st.x, p.st.z) >= 0) return; // E — закладка
+    if (p.team === TEAM_CT && this.bomb.status === 'planted' && this.nearBomb(p)) return; // E — обезвреживание
+    let best = -1,
+      bestD = 1.5;
+    for (let i = 0; i < this.drops.length; i++) {
+      const d = this.drops[i];
+      const dist = Math.hypot(d.x - p.st.x, d.z - p.st.z);
+      if (dist < bestD && Math.abs(d.y - p.st.y) < 1.2) {
+        best = i;
+        bestD = dist;
+      }
+    }
+    if (best >= 0) this.takeDrop(p, best);
+  }
+
+  /** Подбор основного оружия на ходу, если слот пуст. */
+  private updateDrops() {
+    if (!this.drops.length) return;
+    for (const p of this.players) {
+      if (!p.alive || p.primary) continue;
+      for (let i = 0; i < this.drops.length; i++) {
+        const d = this.drops[i];
+        if (d.inst.def.slot === SLOT_PRIMARY && Math.hypot(d.x - p.st.x, d.z - p.st.z) < 0.9 && Math.abs(d.y - p.st.y) < 1.2) {
+          this.takeDrop(p, i);
+          break;
+        }
+      }
     }
   }
 
@@ -1019,7 +1268,9 @@ export class Room {
       bz = b.st.z;
     const m = this.info.map;
     const hh = b.st.crouch ? 1.15 : 1.6;
-    return lineOfSight(m, ax, ay, az, bx, by + hh, bz) || lineOfSight(m, ax, ay, az, bx, by + hh * 0.65, bz) || lineOfSight(m, ax, ay, az, bx, by + 0.3, bz);
+    const now = this.time;
+    const see = (ty: number) => lineOfSight(m, ax, ay, az, bx, ty, bz) && !smokeBlocks(this.smokes, now, ax, ay, az, bx, ty, bz);
+    return see(by + hh) || see(by + hh * 0.65) || see(by + 0.3);
   }
 
   private visibleFor(viewer: Player, target: Player): boolean {
@@ -1032,7 +1283,12 @@ export class Room {
       // «скоро увидит»: проверка с упреждением по скорости
       const k = 0.15;
       const [ax, ay, az] = viewer.eye();
-      vis = lineOfSight(this.info.map, ax + viewer.st.vx * k, ay, az + viewer.st.vz * k, target.st.x + target.st.vx * k, target.st.y + 1.4, target.st.z + target.st.vz * k);
+      const ax2 = ax + viewer.st.vx * k,
+        az2 = az + viewer.st.vz * k,
+        bx2 = target.st.x + target.st.vx * k,
+        by2 = target.st.y + 1.4,
+        bz2 = target.st.z + target.st.vz * k;
+      vis = lineOfSight(this.info.map, ax2, ay, az2, bx2, by2, bz2) && !smokeBlocks(this.smokes, now, ax2, ay, az2, bx2, by2, bz2);
     }
     if (vis) target.visUntil[viewer.id] = now + 0.3;
     return vis;
@@ -1122,6 +1378,7 @@ export class Room {
       map: this.mapId,
       half: this.halfDone,
       votes: this.voteCounts(),
+      drops: this.drops.map((d) => ({ i: d.id, w: d.inst.def.id, x: d.x, y: d.y, z: d.z, r: d.r })),
     };
   }
 
@@ -1132,8 +1389,8 @@ export class Room {
       const p = c.slot >= 0 ? this.players[c.slot] : null;
       // мёртвые и наблюдатели видят всё, как в спектаторском режиме
       c.sendJson(p ? (p.alive ? byTeam[p.team] : byTeam[p.team]) : spec);
-      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id });
-      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
+      if (p) c.sendJson({ t: 'me', id: p.id, team: p.team, money: p.money, spectator: false, queue: 0, pri: p.primary ? p.primary.def.id : -1, pis: p.pistol.def.id, nades: [...p.nades] as [number, number, number] });
+      else c.sendJson({ t: 'me', id: -1, team: c.pendingSlot >= 0 ? this.players[c.pendingSlot].team : -1, money: 0, pri: -1, pis: 1, nades: [0, 0, 0], spectator: true, queue: c.pendingSlot >= 0 ? 0 : [...this.spectators].filter((s) => s.pendingSlot < 0).indexOf(c) + 1 });
     }
   }
 
@@ -1146,6 +1403,7 @@ export class Room {
       corpses: this.players.filter((p) => !p.alive).map((p) => ({ i: p.id, x: p.st.x, y: p.st.y, z: p.st.z, yaw: p.deathYaw, ex: p.exploded })),
       wounds: this.players.filter((p) => p.wounds.length).map((p) => ({ i: p.id, ops: p.wounds.slice() })),
       tracers: true,
+      smokes: this.smokes.map((s) => ({ x: s.x, y: s.y, z: s.z, left: s.end - this.time })),
     };
   }
 

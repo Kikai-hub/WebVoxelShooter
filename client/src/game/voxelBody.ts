@@ -158,7 +158,8 @@ export class VoxelBody {
   setWeapon(kind: string) {
     if (kind === this.gunKind) return;
     this.gunKind = kind;
-    const len = kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'sniper' ? 0.75 : kind === 'smg' ? 0.38 : 0.55;
+    this.gun.visible = kind !== 'none';
+    const len = kind === 'pistol' ? 0.2 : kind === 'knife' ? 0.18 : kind === 'grenade' ? 0.1 : kind === 'sniper' ? 0.75 : kind === 'smg' ? 0.38 : 0.55;
     this.gun.scale.set(1, 1, len / 0.5);
     this.gun.position.set(-0.05 + (kind === 'pistol' || kind === 'knife' ? 0.02 : -0.02), -0.36, -0.12 - (len - 0.5) * 0.4);
     const tint = SKINS[this.skin]?.tint ?? 0xffffff;

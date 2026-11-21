@@ -5,13 +5,21 @@ import { rand01 } from './rng';
 export const SLOT_PRIMARY = 0;
 export const SLOT_PISTOL = 1;
 export const SLOT_KNIFE = 2;
-export const SLOT_NAMES = ['Основное', 'Пистолет', 'Нож'];
+/** Слоты гранат: 3 — осколочная, 4 — светошумовая, 5 — дымовая */
+export const SLOT_HE = 3;
+export const SLOT_FLASH = 4;
+export const SLOT_SMOKE = 5;
+export const SLOT_NAMES = ['Основное', 'Пистолет', 'Нож', 'Осколочная', 'Светошумовая', 'Дымовая'];
+export const NADE_TYPES = ['he', 'flash', 'smoke'] as const;
+export type NadeType = (typeof NADE_TYPES)[number];
+/** сколько гранат каждого типа можно нести */
+export const NADE_LIMIT: Record<NadeType, number> = { he: 1, flash: 2, smoke: 1 };
 
 export interface WeaponDef {
   id: number;
   key: string;
   name: string;
-  kind: 'knife' | 'pistol' | 'smg' | 'shotgun' | 'rifle' | 'sniper';
+  kind: 'knife' | 'pistol' | 'smg' | 'shotgun' | 'rifle' | 'sniper' | 'grenade';
   slot: number;
   price: number;
   damage: number;
@@ -44,8 +52,14 @@ export const WEAPONS: WeaponDef[] = [
   { id: 3, key: 'shmel', name: 'Шмель', kind: 'smg', slot: SLOT_PRIMARY, price: 1250, damage: 26, interval: 0.075, mag: 30, reserve: 120, reload: 2.4, spread: 0.01, moveSpread: 0.02, recoil: 0.006, recoilMax: 0.06, range: 200, armorPen: 0.6, auto: true, pellets: 1, killReward: 600, speed: 0.97 },
   { id: 4, key: 'molot', name: 'Молот', kind: 'shotgun', slot: SLOT_PRIMARY, price: 1100, damage: 22, interval: 0.9, mag: 7, reserve: 32, reload: 3.0, spread: 0.065, moveSpread: 0.02, recoil: 0.02, recoilMax: 0.04, range: 40, armorPen: 0.5, auto: false, pellets: 8, killReward: 900, speed: 0.94 },
   { id: 5, key: 'vikhr', name: 'Вихрь', kind: 'rifle', slot: SLOT_PRIMARY, price: 2700, damage: 35, interval: 0.1, mag: 30, reserve: 90, reload: 2.5, spread: 0.003, moveSpread: 0.08, recoil: 0.008, recoilMax: 0.07, range: 300, armorPen: 0.78, auto: true, pellets: 1, killReward: 300, speed: 0.9 },
+  { id: 7, key: 'he', name: 'Осколочная', kind: 'grenade', slot: SLOT_HE, price: 300, damage: 98, interval: 0.8, mag: 0, reserve: 0, reload: 0, spread: 0, moveSpread: 0, recoil: 0, recoilMax: 0, range: 0, armorPen: 0.57, auto: false, pellets: 1, killReward: 300, speed: 1 },
+  { id: 8, key: 'flash', name: 'Светошумовая', kind: 'grenade', slot: SLOT_FLASH, price: 200, damage: 0, interval: 0.8, mag: 0, reserve: 0, reload: 0, spread: 0, moveSpread: 0, recoil: 0, recoilMax: 0, range: 0, armorPen: 0, auto: false, pellets: 1, killReward: 0, speed: 1 },
+  { id: 9, key: 'smoke', name: 'Дымовая', kind: 'grenade', slot: SLOT_SMOKE, price: 300, damage: 0, interval: 0.8, mag: 0, reserve: 0, reload: 0, spread: 0, moveSpread: 0, recoil: 0, recoilMax: 0, range: 0, armorPen: 0, auto: false, pellets: 1, killReward: 0, speed: 1 },
   { id: 6, key: 'sokol', name: 'Сокол', kind: 'sniper', slot: SLOT_PRIMARY, price: 4750, damage: 115, interval: 1.4, mag: 5, reserve: 30, reload: 3.6, spread: 0.0008, moveSpread: 0.15, recoil: 0.05, recoilMax: 0.05, range: 500, armorPen: 0.97, auto: false, pellets: 1, killReward: 100, speed: 0.84 },
 ];
+
+// индекс в массиве = id оружия (на это опираются клиент и протокол)
+WEAPONS.sort((a, b) => a.id - b.id);
 
 export const WEAPON_BY_KEY: Record<string, WeaponDef> = Object.fromEntries(WEAPONS.map((w) => [w.key, w]));
 export const DEFAULT_PISTOL = WEAPONS[1];

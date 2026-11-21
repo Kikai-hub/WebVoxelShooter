@@ -10,13 +10,20 @@ function box(w: number, h: number, d: number, color: number, x: number, y: numbe
   return m;
 }
 
-function buildGun(def: WeaponDef, tint: number): THREE.Group {
+export function buildGun(def: WeaponDef, tint: number): THREE.Group {
   const g = new THREE.Group();
   const t = new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.35);
   const metal = new THREE.Color(0x5a5d66).multiply(t).getHex();
   const metal2 = new THREE.Color(0x7a7e88).multiply(t).getHex();
   const wood = new THREE.Color(0x7a5230).multiply(t).getHex();
   switch (def.kind) {
+    case 'grenade': {
+      const body = def.key === 'he' ? 0x4f6b32 : def.key === 'flash' ? 0x9aa0a6 : 0xd9d9d4;
+      g.add(box(0.07, 0.1, 0.07, body, 0, 0.02, -0.04));
+      g.add(box(0.04, 0.03, 0.04, 0x555555, 0, 0.085, -0.04));
+      g.add(box(0.015, 0.015, 0.05, 0xc9a23a, 0.025, 0.09, -0.02));
+      break;
+    }
     case 'knife':
       g.add(box(0.03, 0.05, 0.12, 0x2a2420, 0, 0, 0.05));
       g.add(box(0.012, 0.045, 0.22, 0xb9c0c6, 0, 0.01, -0.12));
@@ -115,7 +122,7 @@ export class ViewModel {
     const def = WEAPONS[id];
     const len = def?.kind === 'sniper' ? 0.65 : def?.kind === 'shotgun' ? 0.5 : def?.kind === 'rifle' ? 0.55 : def?.kind === 'smg' ? 0.38 : def?.kind === 'knife' ? 0.25 : 0.18;
     this.flash.position.set(0, 0.02, -len);
-    this.gloveL.visible = this.sleeveL.visible = def?.kind !== 'pistol' && def?.kind !== 'knife';
+    this.gloveL.visible = this.sleeveL.visible = def?.kind !== 'pistol' && def?.kind !== 'knife' && def?.kind !== 'grenade';
     this.switchT = 0.3;
   }
 

@@ -70,3 +70,15 @@ export const BTN_CROUCH = 32;
 export const BTN_FIRE = 64;
 export const BTN_USE = 128;
 export const BTN_RELOAD = 256;
+export const BTN_DROP = 512;
+
+// Гранаты
+export const NADE_GRAVITY = 18;
+export const NADE_THROW_SPEED = 15;
+export const NADE_FUSE = 1.6;
+export const HE_RADIUS = 6;
+export const HE_MAX_DAMAGE = 98;
+export const FLASH_RANGE = 25;
+export const SMOKE_RADIUS = 3.2;
+export const SMOKE_TIME = 15;
+export const MAX_DROPS = 24;

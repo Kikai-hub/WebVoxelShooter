@@ -245,9 +245,9 @@ export class Hud {
     this.armor.textContent = String(armor);
   }
 
-  setWeapon(weaponId: number, mag: number, reserve: number, slots: Array<{ slot: number; name: string; active: boolean }>, reloading: boolean) {
+  setWeapon(weaponId: number, mag: number, reserve: number, slots: Array<{ slot: number; name: string; active: boolean; key?: string }>, reloading: boolean) {
     const def = WEAPONS[weaponId];
-    this.ammo.textContent = def && def.kind !== 'knife' ? (reloading ? 'перезарядка' : `${mag} / ${reserve}`) : '';
+    this.ammo.textContent = def && def.kind !== 'knife' && def.kind !== 'grenade' ? (reloading ? 'перезарядка' : `${mag} / ${reserve}`) : '';
     this.ammo.classList.toggle('low', !!def && def.mag > 0 && mag <= def.mag * 0.2);
     const key = slots.map((s) => s.slot + s.name + s.active).join();
     if (this.slots.dataset.key === key) return;
@@ -255,7 +255,7 @@ export class Hud {
     this.slots.innerHTML = '';
     for (const s of slots) {
       const d = el('div', 'slot' + (s.active ? ' active' : ''), this.slots);
-      el('span', 'slot-key', d, String(s.slot + 1));
+      el('span', 'slot-key', d, s.key ?? String(s.slot + 1));
       el('span', '', d, s.name);
     }
   }
@@ -284,6 +284,19 @@ export class Hud {
   setCrosshair(spread: number, visible: boolean) {
     this.crosshair.style.display = visible ? 'block' : 'none';
     this.crosshair.style.setProperty('--gap', 4 + Math.min(40, spread * 400) + 'px');
+  }
+
+  /** Ослепление вспышкой: белый экран, который тает. */
+  private flashEl: HTMLDivElement | null = null;
+  flash(dur: number) {
+    if (!this.flashEl) this.flashEl = el('div', 'flashbang', this.root);
+    const f = this.flashEl;
+    f.style.transition = 'none';
+    f.style.opacity = '1';
+    void f.offsetWidth;
+    // держится почти полностью ~60% времени, потом тает
+    f.style.transition = `opacity ${Math.max(0.3, dur * 0.5)}s ease-in ${dur * 0.5}s`;
+    f.style.opacity = '0';
   }
 
   setSpectate(text: string) {
@@ -419,7 +432,14 @@ export class Hud {
     const cols: Array<{ title: string; items: Array<{ key: string; name: string; price: number }> }> = [
       { title: 'Пистолеты', items: WEAPONS.filter((w) => w.slot === SLOT_PISTOL).map((w) => ({ key: w.key, name: w.name, price: w.price })) },
       { title: 'Основное', items: WEAPONS.filter((w) => w.slot === SLOT_PRIMARY).map((w) => ({ key: w.key, name: w.name, price: w.price })) },
-      { title: 'Снаряжение', items: [{ key: 'armor', name: 'Бронежилет', price: ARMOR_PRICE }, { key: 'helmet', name: 'Броня и шлем', price: HELMET_PRICE }] },
+      {
+        title: 'Снаряжение',
+        items: [
+          { key: 'armor', name: 'Бронежилет', price: ARMOR_PRICE },
+          { key: 'helmet', name: 'Броня и шлем', price: HELMET_PRICE },
+          ...WEAPONS.filter((w) => w.kind === 'grenade').map((w) => ({ key: w.key, name: w.name + ' граната', price: w.price })),
+        ],
+      },
     ];
     // выбранное в снаряжении оружие — первым
     cols[0].items.sort((a, b) => (b.key === this.preferred.pistol ? 1 : 0) - (a.key === this.preferred.pistol ? 1 : 0));
@@ -438,7 +458,7 @@ export class Hud {
         b.dataset.key = it.key;
       }
     }
-    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка');
+    el('div', 'buy-hint', this.buyMenu, 'B — закрыть · цифры — быстрая покупка · гранаты: не больше 1 осколочной, 2 светошумовых и 1 дымовой');
   }
 
   buyHotkey(n: number): string | null {
@@ -451,10 +471,13 @@ export class Hud {
   }
 }
 
-export function slotList(primary: number | null, pistol: number, active: number) {
-  const out: Array<{ slot: number; name: string; active: boolean }> = [];
+export function slotList(primary: number | null, pistol: number, active: number, nades: [number, number, number] = [0, 0, 0]) {
+  const out: Array<{ slot: number; name: string; active: boolean; key?: string }> = [];
   if (primary !== null) out.push({ slot: SLOT_PRIMARY, name: WEAPONS[primary].name, active: active === SLOT_PRIMARY });
   out.push({ slot: SLOT_PISTOL, name: WEAPONS[pistol].name, active: active === SLOT_PISTOL });
   out.push({ slot: SLOT_KNIFE, name: 'Нож', active: active === SLOT_KNIFE });
+  nades.forEach((n, i) => {
+    if (n > 0) out.push({ slot: 3 + i, key: '4', name: WEAPONS[7 + i].name + (n > 1 ? ` ×${n}` : ''), active: active === 3 + i });
+  });
   return out;
 }

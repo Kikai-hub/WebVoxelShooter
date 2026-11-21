@@ -16,6 +16,7 @@ import {
   DT,
   INTERP_DELAY,
   MAPS,
+  MAP_LIST,
   PLANT_TIME,
   POSE_SIZE,
   RUN_SPEED,
@@ -153,6 +154,9 @@ export class Game {
 
   // ввод
   private keys = new Set<string>();
+  /** нажатые и уже отпущенные между тиками клавиши — тоже попадают в ближайший тик */
+  private tapped = new Set<string>();
+  private fireTap = false;
   private mouseDown = false;
   private rightDown = false;
   private yaw = 0;
@@ -178,9 +182,10 @@ export class Game {
     private container: HTMLElement,
     private account: AccountInfo,
     private onExit: (msg?: string) => void,
+    mapId = 'market',
   ) {
     this.settings = { ...account.settings };
-    this.info = MAPS.market();
+    this.info = (MAPS[mapId] ?? MAPS.market)();
     this.wrap = document.createElement('div');
     this.wrap.className = 'game';
     container.appendChild(this.wrap);
@@ -201,10 +206,13 @@ export class Game {
     const sun = new THREE.DirectionalLight(0xfff0d0, 2.0);
     sun.position.set(30, 60, 18);
     this.scene.add(sun);
-    this.scene.add(this.buildSkyDecor());
+    this.skyGroup = this.buildSkyDecor();
+    this.scene.add(this.skyGroup);
 
-    const { group } = buildMapMeshes(this.info.map);
-    this.scene.add(group);
+    const built = buildMapMeshes(this.info.map);
+    this.mapGroup = built.group;
+    this.mapMaterial = built.material;
+    this.scene.add(this.mapGroup);
     this.debris = new Debris(this.info.map, 2000);
     this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh);
 
@@ -223,6 +231,7 @@ export class Game {
     this.hud.preferred = { primary: account.loadout.primary[0], pistol: account.loadout.pistol[0] };
     this.hud.onChat = (t) => this.sendJson({ t: 'chat', text: t });
     this.hud.onBuy = (k) => this.sendJson({ t: 'buy', item: k });
+    this.hud.onChatClose = () => this.lock();
     this.applySettings(this.settings);
 
     this.pauseEl = document.createElement('div');
@@ -234,10 +243,36 @@ export class Game {
     this.resize();
     window.addEventListener('resize', this.resize);
     this.connect();
+    this.tickTimer = window.setInterval(this.tickLoop, 4);
     requestAnimationFrame(this.frame);
   }
 
   // ---------- Оформление ----------
+
+  private mapGroup: THREE.Group;
+  private mapMaterial: THREE.Material;
+  private skyGroup: THREE.Group;
+
+  /** Смена карты после голосования: пересобираем меш, миникарту и окружение. */
+  private setMap(id: string) {
+    if (id === this.info.id || !MAPS[id]) return;
+    this.info = MAPS[id]();
+    for (const g of [this.mapGroup, this.skyGroup]) {
+      this.scene.remove(g);
+      g.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+    }
+    this.mapMaterial.dispose();
+    const built = buildMapMeshes(this.info.map);
+    this.mapGroup = built.group;
+    this.mapMaterial = built.material;
+    this.skyGroup = this.buildSkyDecor();
+    this.scene.add(this.mapGroup, this.skyGroup);
+    this.debris.map = this.info.map;
+    this.debris.clear();
+    this.impacts.clear();
+    this.hud.setMap(this.info);
+    this.hud.info(`Карта: ${this.info.name}`);
+  }
 
   private buildSkyDecor(): THREE.Group {
     const g = new THREE.Group();
@@ -245,6 +280,9 @@ export class Game {
     const towerMat = new THREE.MeshLambertMaterial({ color: 0xd2ac74 });
     let s = 7;
     const r = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    const cx = this.info.map.width / 2,
+      cz = this.info.map.depth / 2;
+    const reach = Math.max(cx, cz);
     for (let i = 0; i < 26; i++) {
       const cl = new THREE.Group();
       const n = 3 + Math.floor(r() * 4);
@@ -255,17 +293,17 @@ export class Game {
       }
       const a = r() * Math.PI * 2,
         d = 60 + r() * 90;
-      cl.position.set(24 + Math.cos(a) * d, 28 + r() * 18, 24 + Math.sin(a) * d);
+      cl.position.set(cx + Math.cos(a) * d, 28 + r() * 18, cz + Math.sin(a) * d);
       g.add(cl);
     }
     // башни и дома на горизонте
     for (let i = 0; i < 18; i++) {
       const a = (i / 18) * Math.PI * 2 + r() * 0.2;
-      const d = 40 + r() * 25;
+      const d = reach + 16 + r() * 25;
       const h = 6 + r() * 14;
       const w = 3 + r() * 5;
       const t = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), towerMat);
-      t.position.set(24 + Math.cos(a) * d, h / 2, 24 + Math.sin(a) * d);
+      t.position.set(cx + Math.cos(a) * d, h / 2, cz + Math.sin(a) * d);
       g.add(t);
       if (r() < 0.5) {
         const top = new THREE.Mesh(new THREE.BoxGeometry(w * 0.6, 2, w * 0.6), towerMat);
@@ -275,7 +313,7 @@ export class Game {
     }
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: 0xc9ab7c }));
     ground.rotation.x = -Math.PI / 2;
-    ground.position.set(24, 0.45, 24);
+    ground.position.set(cx, 0.45, cz);
     g.add(ground);
     return g;
   }
@@ -378,8 +416,10 @@ export class Game {
         this.spectator = m.spectator;
         this.queue = m.queue;
         if (m.team !== this.myTeam && m.team >= 0) {
+          const first = this.myTeam < 0;
           this.myTeam = m.team;
           this.vm.setTeam(m.team);
+          if (first) this.faceSpawnDirection();
         }
         if (wasSpec !== m.spectator) this.pending.length = 0;
         // сервер сам меняет оружие при покупке и в начале раунда — следуем за ним
@@ -472,6 +512,7 @@ export class Game {
 
   private onFull(m: FullState) {
     this.myId = m.you;
+    this.setMap(m.map);
     // новое полное состояние (вход, новый раунд): пересобираем тела
     for (const p of this.players.values()) {
       p.body?.dispose();
@@ -622,6 +663,7 @@ export class Game {
         break;
       }
       case 'roundStart':
+        this.faceSpawnDirection();
         this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         this.buyOpen = false;
         this.hud.showBuy(false, 0, false);
@@ -655,6 +697,13 @@ export class Game {
     }
   }
 
+  /** Нападение смотрит на север (к точкам), защита — на юг. */
+  private faceSpawnDirection() {
+    if (this.myTeam < 0) return;
+    this.yaw = this.myTeam === 0 ? Math.PI : 0;
+    this.pitch = 0;
+  }
+
   private markImpact(a: [number, number, number], b: [number, number, number]) {
     const dx = b[0] - a[0],
       dy = b[1] - a[1],
@@ -686,8 +735,12 @@ export class Game {
 
   private bindInput() {
     const canvas = this.renderer.domElement;
-    canvas.addEventListener('click', () => this.lock());
+    canvas.addEventListener('click', () => {
+      if (!this.locked()) this.lock();
+    });
     document.addEventListener('pointerlockchange', this.onLockChange);
+    document.addEventListener('pointerlockerror', this.onLockError);
+    this.wrap.addEventListener('mouseleave', () => (this.mouseX = -1));
     document.addEventListener('mousemove', this.onMouseMove);
     document.addEventListener('mousedown', this.onMouseDown);
     document.addEventListener('mouseup', this.onMouseUp);
@@ -699,6 +752,7 @@ export class Game {
 
   private unbindInput() {
     document.removeEventListener('pointerlockchange', this.onLockChange);
+    document.removeEventListener('pointerlockerror', this.onLockError);
     document.removeEventListener('mousemove', this.onMouseMove);
     document.removeEventListener('mousedown', this.onMouseDown);
     document.removeEventListener('mouseup', this.onMouseUp);
@@ -709,29 +763,84 @@ export class Game {
     window.removeEventListener('resize', this.resize);
   }
 
+  /**
+   * Запасной режим без захвата мыши: некоторые браузеры и встроенные окна
+   * (например, панель браузера в приложении) не разрешают pointer lock.
+   * Тогда игра идёт и так: взгляд по движению мыши над окном, Esc — пауза.
+   */
+  private softLock = false;
+  private lockWarned = false;
+
   private locked(): boolean {
+    return this.softLock || document.pointerLockElement === this.renderer.domElement;
+  }
+
+  private realLocked(): boolean {
     return document.pointerLockElement === this.renderer.domElement;
   }
 
   private lock() {
     this.sfx.unlock();
+    this.pauseEl.style.display = 'none';
     const el = this.renderer.domElement as any;
+    const fallback = () => {
+      if (!this.realLocked() && !this.hud.chatOpen && !this.buyOpen) this.enterSoftLock();
+    };
     try {
-      const r = el.requestPointerLock({ unadjustedMovement: true });
-      if (r && r.catch) r.catch(() => el.requestPointerLock());
+      const r = el.requestPointerLock?.({ unadjustedMovement: true });
+      if (r && r.catch)
+        r.catch(() => {
+          // без unadjustedMovement, а если и так нельзя — запасной режим
+          const r2 = el.requestPointerLock?.();
+          if (r2 && r2.catch) r2.catch(fallback);
+        });
     } catch {
-      el.requestPointerLock();
+      try {
+        el.requestPointerLock?.();
+      } catch {
+        fallback();
+      }
+    }
+    // браузер может молча проигнорировать запрос
+    setTimeout(fallback, 400);
+  }
+
+  private enterSoftLock() {
+    this.softLock = true;
+    this.pauseEl.style.display = 'none';
+    this.wrap.classList.add('softlock');
+    if (!this.lockWarned) {
+      this.lockWarned = true;
+      this.hud.info('Браузер не дал захватить мышь — включён запасной режим: поворот движением мыши над окном, Esc — пауза. Для полноценной игры откройте сайт в обычном Chrome, Edge или Firefox.');
     }
   }
 
+  private pause() {
+    this.softLock = false;
+    this.wrap.classList.remove('softlock');
+    if (this.realLocked()) document.exitPointerLock();
+    this.keys.clear();
+    this.mouseDown = false;
+    this.rightDown = false;
+    this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen ? 'none' : 'flex';
+  }
+
   private onLockChange = () => {
-    const l = this.locked();
-    this.pauseEl.style.display = l || this.hud.chatOpen || this.buyOpen ? 'none' : 'flex';
-    if (!l) {
+    const l = this.realLocked();
+    if (l) {
+      this.softLock = false;
+      this.wrap.classList.remove('softlock');
+    }
+    if (!l && !this.softLock) {
+      this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen || this.st?.ph === 'vote' ? 'none' : 'flex';
       this.keys.clear();
       this.mouseDown = false;
       this.rightDown = false;
     }
+  };
+
+  private onLockError = () => {
+    if (!this.hud.chatOpen && !this.buyOpen) this.enterSoftLock();
   };
 
   private onContext = (e: Event) => e.preventDefault();
@@ -741,6 +850,9 @@ export class Game {
   };
 
   private onMouseMove = (e: MouseEvent) => {
+    const r = this.wrap.getBoundingClientRect();
+    this.mouseX = e.clientX - r.left;
+    this.mouseY = e.clientY - r.top;
     if (!this.locked()) return;
     const scoped = this.isScoped();
     const k = 0.0022 * this.settings.sens * (scoped ? 0.35 : 1);
@@ -755,6 +867,7 @@ export class Game {
     if (!this.locked()) return;
     if (e.button === 0) {
       this.mouseDown = true;
+      this.fireTap = true;
       if (!this.predAlive) this.cycleSpectate();
     }
     if (e.button === 2) this.rightDown = !this.rightDown;
@@ -774,7 +887,12 @@ export class Game {
     if (code === 'Enter' || code === 'KeyT' || code === 'KeyY') {
       e.preventDefault();
       this.hud.openChat();
-      if (this.locked()) document.exitPointerLock();
+      if (this.realLocked()) document.exitPointerLock();
+      return;
+    }
+    if (this.st?.ph === 'vote' && /^Digit[1-3]$/.test(code)) {
+      const m = MAP_LIST[Number(code.slice(5)) - 1];
+      if (m) this.castVote(m.id);
       return;
     }
     if (code === 'KeyB') {
@@ -790,6 +908,10 @@ export class Game {
       this.toggleBuy();
       return;
     }
+    if (code === 'Escape' && this.softLock) {
+      this.pause();
+      return;
+    }
     if (!this.locked()) return;
     if (code === 'ControlLeft' || code === 'ControlRight') e.preventDefault();
     if (code === 'Digit1') this.selectSlot(SLOT_PRIMARY);
@@ -797,6 +919,7 @@ export class Game {
     if (code === 'Digit3') this.selectSlot(SLOT_KNIFE);
     if (code === 'KeyQ') this.selectSlot(this.lastSlot);
     this.keys.add(code);
+    this.tapped.add(code);
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -807,8 +930,10 @@ export class Game {
   private toggleBuy() {
     this.buyOpen = !this.buyOpen;
     this.hud.showBuy(this.buyOpen, this.money, this.canBuyLocal());
-    if (this.buyOpen && this.locked()) document.exitPointerLock();
-    if (!this.buyOpen) this.lock();
+    if (this.buyOpen) {
+      this.softLock = false;
+      if (this.realLocked()) document.exitPointerLock();
+    } else this.lock();
   }
 
   private canBuyLocal(): boolean {
@@ -845,7 +970,7 @@ export class Game {
   private buttons(): number {
     if (this.hud.chatOpen || !this.locked()) return 0;
     let b = 0;
-    const k = this.keys;
+    const k = { has: (c: string) => this.keys.has(c) || this.tapped.has(c) };
     if (k.has('KeyW') || k.has('ArrowUp')) b |= BTN_FWD;
     if (k.has('KeyS') || k.has('ArrowDown')) b |= BTN_BACK;
     if (k.has('KeyA') || k.has('ArrowLeft')) b |= BTN_LEFT;
@@ -854,7 +979,7 @@ export class Game {
     if (k.has('KeyC') || k.has('ControlLeft') || k.has('ControlRight')) b |= BTN_CROUCH;
     if (k.has('KeyE')) b |= BTN_USE;
     if (k.has('KeyR')) b |= BTN_RELOAD;
-    if (this.mouseDown) b |= BTN_FIRE;
+    if (this.mouseDown || this.fireTap) b |= BTN_FIRE;
     return b;
   }
 
@@ -934,6 +1059,51 @@ export class Game {
     }
   }
 
+  // ---------- Тики 64 Гц, независимо от частоты кадров ----------
+
+  private lastTickAt = performance.now();
+  private tickTimer = 0;
+
+  /**
+   * Команды игроку шлются 64 раза в секунду, даже если браузер рисует мало кадров
+   * (слабое железо, встроенное окно, свёрнутая панель). Иначе движение «замирает».
+   */
+  private tickLoop = () => {
+    if (!this.running) return;
+    const now = performance.now();
+    let dt = (now - this.lastTickAt) / 1000;
+    this.lastTickAt = now;
+    if (dt > 0.25) dt = 0.25;
+    this.accum += dt;
+    let n = 0;
+    while (this.accum >= DT && n < 16) {
+      this.edgeTurn();
+      this.clientTick();
+      this.tapped.clear();
+      this.fireTap = false;
+      this.accum -= DT;
+      n++;
+    }
+    if (n === 16) this.accum = 0;
+  };
+
+  /** Запасной режим: курсор у края окна продолжает поворот, чтобы мышь «не упиралась». */
+  private mouseX = -1;
+  private mouseY = -1;
+  private edgeTurn() {
+    if (!this.softLock || this.mouseX < 0) return;
+    const w = this.wrap.clientWidth,
+      h = this.wrap.clientHeight;
+    const edge = 0.08;
+    const fx = this.mouseX / w,
+      fy = this.mouseY / h;
+    const speed = 2.6 * this.settings.sens * DT;
+    if (fx < edge) this.yaw += speed * (1 - fx / edge);
+    else if (fx > 1 - edge) this.yaw -= speed * (1 - (1 - fx) / edge);
+    if (fy < edge) this.pitch = Math.min(1.55, this.pitch + speed * 0.6 * (1 - fy / edge));
+    else if (fy > 1 - edge) this.pitch = Math.max(-1.55, this.pitch - speed * 0.6 * (1 - (1 - fy) / edge));
+  }
+
   // ---------- Кадр ----------
 
   private frame = () => {
@@ -946,15 +1116,9 @@ export class Game {
     this.fpsAvg = this.fpsAvg * 0.95 + dt * 1000 * 0.05;
     this.adaptResolution(dt);
 
-    this.accum += dt;
-    let n = 0;
-    while (this.accum >= DT && n < 8) {
-      this.clientTick();
-      this.accum -= DT;
-      n++;
-    }
-    if (n === 8) this.accum = 0;
-    const alpha = this.accum / DT;
+    // ввод и движение считает tickLoop по своему таймеру; здесь только доля тика для плавной камеры
+    this.tickLoop();
+    const alpha = Math.min(1, this.accum / DT);
 
     // сглаживание ошибки предсказания за ~100 мс
     this.errOffset.multiplyScalar(Math.exp(-dt * 25));
@@ -1126,8 +1290,10 @@ export class Game {
     } else {
       // свободная камера над площадью
       const t = performance.now() / 1000;
-      cam.position.set(24 + Math.cos(t * 0.1) * 20, 22, 24 + Math.sin(t * 0.1) * 20);
-      cam.lookAt(24, 0, 24);
+      const cx = this.info.map.width / 2,
+        cz = this.info.map.depth / 2;
+      cam.position.set(cx + Math.cos(t * 0.1) * 20, 22, cz + Math.sin(t * 0.1) * 20);
+      cam.lookAt(cx, 0, cz);
       this.hud.setSpectate(this.spectator ? (this.queue > 0 ? `Наблюдение · вы в очереди: ${this.queue}` : 'Наблюдение · вход в следующем раунде') : 'Ожидание следующего раунда');
     }
   }
@@ -1154,8 +1320,31 @@ export class Game {
     }
   }
 
+  private myVote = '';
+  private lastPhase = '';
+
+  private castVote(id: string) {
+    this.myVote = id;
+    this.sendJson({ t: 'vote', map: id });
+  }
+
   private updateHud(now: number) {
     const own = this.own;
+    const ph = this.st?.ph ?? '';
+    if (ph !== this.lastPhase) {
+      if (ph === 'vote') {
+        // освобождаем мышь, чтобы можно было кликнуть по карте
+        this.myVote = '';
+        this.softLock = false;
+        this.wrap.classList.remove('softlock');
+        if (this.realLocked()) document.exitPointerLock();
+        this.pauseEl.style.display = 'none';
+      } else if (this.lastPhase === 'vote' && !this.locked()) {
+        this.pauseEl.style.display = 'flex';
+      }
+      this.lastPhase = ph;
+    }
+    this.hud.showVote(this.st, this.myVote, (id) => this.castVote(id));
     const alive = this.predAlive;
     this.hud.update(this.st, { id: this.myId, team: this.myTeam, money: this.money }, now);
     if (own && own.present) {
@@ -1255,8 +1444,9 @@ export class Game {
 
   dispose() {
     this.running = false;
+    clearInterval(this.tickTimer);
     this.unbindInput();
-    if (this.locked()) document.exitPointerLock();
+    if (this.realLocked()) document.exitPointerLock();
     this.ws?.close();
     for (const p of this.players.values()) p.body?.dispose();
     this.renderer.dispose();

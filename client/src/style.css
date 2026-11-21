@@ -984,3 +984,65 @@ input {
     min-width: 0;
   }
 }
+
+.game.softlock canvas {
+  cursor: none;
+}
+
+/* ---------- Голосование за карту ---------- */
+.vote {
+  pointer-events: auto;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(10, 12, 16, 0.92);
+  border: 1px solid var(--line);
+  padding: 20px;
+  width: min(820px, 94vw);
+}
+.vote-title {
+  font-family: var(--wide);
+  letter-spacing: 0.1em;
+  margin-bottom: 14px;
+}
+.vote-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.vote-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-bottom: 3px solid #6f7680;
+  min-height: 130px;
+}
+.vote-card b {
+  font-size: 17px;
+}
+.vote-card:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+.vote-card.mine {
+  border-color: var(--accent);
+  background: rgba(240, 180, 74, 0.14);
+}
+.vote-card.current .vote-desc::after {
+  content: ' · сыграна только что';
+  color: var(--muted);
+}
+.vote-desc {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+}
+.vote-count {
+  font-family: var(--wide);
+  color: var(--accent);
+}

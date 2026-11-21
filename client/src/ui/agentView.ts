@@ -19,17 +19,14 @@ export function renderMenuBackground(width: number, height: number): string {
   const sun = new THREE.DirectionalLight(0xfff0d0, 2);
   sun.position.set(30, 60, 18);
   scene.add(sun);
-  const info = MAPS.market();
+  const ids = Object.keys(MAPS);
+  const info = MAPS[ids[Math.floor(Math.random() * ids.length)]]();
   const { group, material } = buildMapMeshes(info.map);
   scene.add(group);
   const cam = new THREE.PerspectiveCamera(60, width / height, 0.1, 200);
-  const views = [
-    [24, 2.2, 6, 24, 1.5, 30],
-    [8, 2.5, 26, 8, 1, 36],
-    [40, 2.5, 44, 30, 1.5, 30],
-    [20, 2, 36, 26, 1.5, 22],
-  ];
-  const v = views[Math.floor(Math.random() * views.length)];
+  // вид с базы нападения в сторону точек
+  const site = info.sites[Math.floor(Math.random() * 2)];
+  const v = [info.mid[0], 2.6, info.mid[1] - 6, (site.x0 + site.x1) / 2, 1.2, (site.z0 + site.z1) / 2];
   cam.position.set(v[0], v[1], v[2]);
   cam.lookAt(v[3], v[4], v[5]);
   renderer.render(scene, cam);

@@ -27,6 +27,7 @@ import {
   MAX_MONEY,
   MAX_PLAYERS,
   MAX_SPECTATORS,
+  VOTE_TIME,
   MAX_WOUNDS,
   PART_DAMAGE,
   PART_HEAD,
@@ -231,14 +232,15 @@ export class Room {
   draining = false;
   onDrained: (() => void) | null = null;
   /** статистика для теста ботов */
-  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0 };
+  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number> };
   tickTimeMs = 0;
 
   constructor(
     readonly botLevel: string = 'medium',
     readonly maxSpectators: number = MAX_SPECTATORS,
+    initialMap = 'market',
   ) {
-    this.loadMap('market');
+    this.loadMap(MAPS[initialMap] ? initialMap : 'market');
     for (let i = 0; i < MAX_PLAYERS; i++) {
       const p = new Player(i, i < TEAM_SIZE ? TEAM_T : TEAM_CT);
       this.makeBot(p);
@@ -466,6 +468,47 @@ export class Room {
     return true;
   }
 
+  // ---------- Голосование за карту ----------
+
+  /** для тестов: всегда эта карта */
+  lockMap: string | null = null;
+  /** голос аккаунта → id карты */
+  votes = new Map<string, string>();
+
+  private startVote() {
+    this.phase = 'vote';
+    this.phaseEnd = this.time + VOTE_TIME;
+    this.votes.clear();
+    this.events.push({ e: 'vote' });
+  }
+
+  vote(conn: Conn, mapId: string) {
+    if (this.phase !== 'vote' || !MAPS[mapId]) return;
+    // голосуют игроки комнаты (в том числе ожидающие места)
+    const isPlayer = this.players.some((p) => (p.conn === conn || p.pending === conn) && !p.isBot) || conn.pendingSlot >= 0;
+    if (!isPlayer) return;
+    this.votes.set(conn.accountId, mapId);
+  }
+
+  voteCounts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const id of Object.keys(MAPS)) out[id] = 0;
+    for (const v of this.votes.values()) out[v] = (out[v] ?? 0) + 1;
+    return out;
+  }
+
+  private finishVote() {
+    const counts = this.voteCounts();
+    const max = Math.max(...Object.values(counts));
+    // большинство; при ничьей (и если никто не голосовал) — случайная из лидеров
+    const leaders = Object.keys(counts).filter((k) => counts[k] === max);
+    const winner = this.lockMap ?? this.rng.pick(leaders);
+    this.events.push({ e: 'mapChosen', map: winner, votes: max });
+    this.stats.mapsPlayed[winner] = (this.stats.mapsPlayed[winner] ?? 0) + 1;
+    this.loadMap(winner);
+    this.startMatch();
+  }
+
   // ---------- Матч и раунды ----------
 
   startMatch() {
@@ -635,9 +678,16 @@ export class Room {
             this.onDrained?.();
             return;
           }
-          this.startMatch();
+          this.startVote();
         }
         break;
+      case 'vote': {
+        // все живые игроки проголосовали — не ждём до конца
+        const humans = this.players.filter((p) => !p.isBot && p.conn).map((p) => p.accountId!);
+        if (humans.length && humans.every((id) => this.votes.has(id)) && this.phaseEnd - now > 3) this.phaseEnd = now + 3;
+        if (now >= this.phaseEnd) this.finishVote();
+        break;
+      }
     }
     this.updateBomb();
   }
@@ -777,7 +827,7 @@ export class Room {
       p.lastButtons = 0;
       return;
     }
-    const canMove = this.phase !== 'freeze';
+    const canMove = this.phase !== 'freeze' && this.phase !== 'vote';
     stepPlayer(p.st, cmd.buttons, p.yaw, this.info.map, canMove, p.weapon.speed);
     p.recoil *= Math.exp(-DT * 6);
 
@@ -797,7 +847,7 @@ export class Room {
       this.events.push({ e: 'reload', s: p.id });
     }
     // Стрельба
-    if (cmd.buttons & BTN_FIRE && this.phase !== 'freeze' && p.reloadEnd === 0 && p.simTime >= p.nextFire && !(cmd.buttons & BTN_USE)) {
+    if (cmd.buttons & BTN_FIRE && this.phase !== 'freeze' && this.phase !== 'vote' && p.reloadEnd === 0 && p.simTime >= p.nextFire && !(cmd.buttons & BTN_USE)) {
       if (def.auto || !(p.lastButtons & BTN_FIRE)) {
         if (wi && wi.mag <= 0) {
           if (wi.reserve > 0) {
@@ -843,6 +893,10 @@ export class Room {
         }
       }
       const end: [number, number, number] = [ex + d[0] * maxT, ey + d[1] * maxT, ez + d[2] * maxT];
+      if (def.kind !== 'knife' && def.pellets === 1) {
+        this.stats.shots++;
+        if (victim) this.stats.hits++;
+      }
       if (def.kind !== 'knife') this.events.push({ e: 'shot', s: p.id, a: [ex, ey, ez], b: end, h });
       if (victim) {
         // рана: вход, а при пробитии торса/головы — выход
@@ -1013,7 +1067,7 @@ export class Room {
         const wi = viewer.weaponInst;
         own.mag = wi ? wi.mag : 0;
         own.reserve = wi ? wi.reserve : 0;
-        own.canMove = this.phase !== 'freeze';
+        own.canMove = this.phase !== 'freeze' && this.phase !== 'vote';
       }
       const buf = new ArrayBuffer(snapshotSize(ents.length));
       encodeSnapshot({ tick: this.tick, ackSeq: viewer ? viewer.lastSeq : 0, own, ents }, buf);
@@ -1067,6 +1121,7 @@ export class Room {
       spec: this.spectators.size,
       map: this.mapId,
       half: this.halfDone,
+      votes: this.voteCounts(),
     };
   }
 
@@ -1112,6 +1167,7 @@ export class Room {
       round: this.roundNum,
       score: this.scores,
       map: this.info.name,
+      mapId: this.mapId,
     };
   }
 }

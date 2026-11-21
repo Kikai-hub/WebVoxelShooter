@@ -200,7 +200,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
 // ---- JSON-сообщения ----
 
 export type BombStatus = 'carried' | 'dropped' | 'planted' | 'defused' | 'exploded' | 'none';
-export type Phase = 'freeze' | 'live' | 'planted' | 'roundEnd' | 'matchEnd';
+export type Phase = 'freeze' | 'live' | 'planted' | 'roundEnd' | 'matchEnd' | 'vote';
 
 export interface PublicPlayer {
   i: number; // слот
@@ -230,6 +230,8 @@ export interface RoomState {
   spec: number;
   map: string;
   half: boolean;
+  /** голоса за карты во время голосования */
+  votes: Record<string, number>;
 }
 
 /** События, которые сервер рассылает пачкой раз в тик. */
@@ -245,6 +247,8 @@ export type GameEvent =
   | { e: 'roundEnd'; w: number; why: string }
   | { e: 'matchEnd'; w: number }
   | { e: 'half' }
+  | { e: 'vote' }
+  | { e: 'mapChosen'; map: string; votes: number }
   | { e: 'chat'; n: string; t: number; text: string; dead: boolean }
   | { e: 'info'; text: string }
   | { e: 'step'; s: number }
@@ -273,4 +277,5 @@ export type ClientMsg =
   | { t: 'auth'; token: string }
   | { t: 'buy'; item: string }
   | { t: 'chat'; text: string }
-  | { t: 'ping'; c: number };
+  | { t: 'ping'; c: number }
+  | { t: 'vote'; map: string };

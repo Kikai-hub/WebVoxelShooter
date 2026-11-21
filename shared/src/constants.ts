@@ -25,6 +25,7 @@ export const DEFUSE_TIME = 10;
 export const DEFUSE_RANGE = 1.6;
 export const ROUND_END_TIME = 6;
 export const MATCH_END_TIME = 20;
+export const VOTE_TIME = 20;
 export const WIN_ROUNDS = 7;
 export const HALF_ROUNDS = 6;
 export const RECONNECT_HOLD = 60;

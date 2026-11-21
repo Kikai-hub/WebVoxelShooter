@@ -5,7 +5,10 @@
 import { Room } from '../server/src/room';
 
 const matches = Number(process.argv[2] ?? 20);
-const room = new Room('medium');
+const mapId = process.argv[3] ?? 'market';
+const room = new Room('medium', 20, mapId === 'all' ? 'market' : mapId);
+if (mapId !== 'all') room.lockMap = mapId;
+console.log('Карта:', room.info.name);
 const t0 = Date.now();
 let maxTick = 0;
 let ticks = 0;
@@ -30,6 +33,8 @@ console.log(`Раунды нападения/защиты: ${room.stats.roundsWo
 console.log(`Застреваний (срабатываний обхода): ${room.stats.stuck}, в среднем ${(room.stats.stuck / Math.max(1, rounds)).toFixed(2)} за раунд`);
 console.log(`Тик: p99 ${p99.toFixed(3)} мс, максимум ${maxTick.toFixed(3)} мс`);
 
+console.log(`Меткость: ${((room.stats.hits / Math.max(1, room.stats.shots)) * 100).toFixed(1)}% попаданий, хедшотов среди убийств ${((room.stats.headshots / Math.max(1, room.stats.kills)) * 100).toFixed(0)}%, выстрелов на убийство ${(room.stats.shots / Math.max(1, room.stats.kills)).toFixed(1)}`);
+console.log('Сыграно карт:', room.stats.mapsPlayed);
 console.log('Причины:', room.stats.reasons, 'убийств', room.stats.kills, 'хедшотов', room.stats.headshots, 'разлётов', room.stats.explodes);
 let ok = true;
 if (room.stats.matches < matches) {

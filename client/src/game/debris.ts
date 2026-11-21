@@ -28,7 +28,7 @@ export class Debris {
   quality = 1;
 
   constructor(
-    private map: VoxelMap,
+    public map: VoxelMap,
     max = 2000,
   ) {
     this.n = max;

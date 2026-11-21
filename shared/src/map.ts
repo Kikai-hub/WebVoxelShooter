@@ -19,8 +19,10 @@ export const MAT = {
   WOOD: 12, // доски балконов
   METAL: 13, // металл
   ROOF: 14, // черепица
+  GROUND: 15, // песчаный грунт
+  ROCK: 16, // скала
 } as const;
-export const MAT_COUNT = 15;
+export const MAT_COUNT = 17;
 
 export interface Rect {
   x0: number;
@@ -79,6 +81,7 @@ export class VoxelMap {
 export interface MapInfo {
   id: string;
   name: string;
+  desc: string;
   map: VoxelMap;
   sites: [Rect, Rect]; // A, B
   siteNames: [string, string];
@@ -88,19 +91,21 @@ export interface MapInfo {
   mid: [number, number];
   /** Именованные зоны для миникарты. */
   zones: Array<{ name: string; r: Rect }>;
+  /** Расстановка ботов защиты: 0 — точка A, 1 — точка B, 2 — центр. По умолчанию 2+2+1. */
+  ctRoles?: number[];
 }
 
-const FLOOR = 0.5; // верх пола в метрах
+export const FLOOR = 0.5; // верх пола в метрах
 
-function wall(m: VoxelMap, x0: number, z0: number, x1: number, z1: number, h: number, mat: number) {
+export function wall(m: VoxelMap, x0: number, z0: number, x1: number, z1: number, h: number, mat: number) {
   m.fill(x0, z0, x1, z1, FLOOR, FLOOR + h, mat);
 }
 
-function crate(m: VoxelMap, x: number, z: number, w: number, d: number, h: number) {
+export function crate(m: VoxelMap, x: number, z: number, w: number, d: number, h: number) {
   m.fill(x, z, x + w, z + d, FLOOR, FLOOR + h, MAT.CRATE);
 }
 
-function palm(m: VoxelMap, x: number, z: number, h: number) {
+export function palm(m: VoxelMap, x: number, z: number, h: number) {
   m.fill(x, z, x + 0.5, z + 0.5, FLOOR, FLOOR + h, MAT.TRUNK);
   const top = FLOOR + h;
   m.fill(x - 1, z - 1, x + 1.5, z + 1.5, top, top + 0.5, MAT.LEAVES);
@@ -110,11 +115,11 @@ function palm(m: VoxelMap, x: number, z: number, h: number) {
 }
 
 /** Арка: проём в стене высотой h с полукруглым верхом из блоков. */
-function archX(m: VoxelMap, x0: number, x1: number, z0: number, z1: number, h: number) {
+export function archX(m: VoxelMap, x0: number, x1: number, z0: number, z1: number, h: number) {
   m.fill(x0, z0, x1, z1, FLOOR, FLOOR + h, MAT.AIR);
   m.fill(x0 + 0.5, z0, x1 - 0.5, z1, FLOOR + h, FLOOR + h + 0.5, MAT.AIR);
 }
-function archZ(m: VoxelMap, z0: number, z1: number, x0: number, x1: number, h: number) {
+export function archZ(m: VoxelMap, z0: number, z1: number, x0: number, x1: number, h: number) {
   m.fill(x0, z0, x1, z1, FLOOR, FLOOR + h, MAT.AIR);
   m.fill(x0, z0 + 0.5, x1, z1 - 0.5, FLOOR + h, FLOOR + h + 0.5, MAT.AIR);
 }
@@ -232,6 +237,7 @@ export function buildMarketSquare(): MapInfo {
   return {
     id: 'market',
     name: 'Рыночная площадь',
+    desc: 'Средняя дистанция, сильный центр, быстрые ротации через арки',
     map: m,
     sites: [siteA, siteB],
     siteNames: ['A', 'B'],
@@ -257,8 +263,3 @@ export function zoneName(info: MapInfo, x: number, z: number): string {
   for (const zn of info.zones) if (inRect(zn.r, x, z)) return zn.name;
   return '';
 }
-
-/** Список карт. Пока одна, голосование появится вместе с двумя другими картами. */
-export const MAPS: Record<string, () => MapInfo> = {
-  market: buildMarketSquare,
-};

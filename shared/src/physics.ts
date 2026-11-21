@@ -124,16 +124,24 @@ export function stepPlayer(s: PState, buttons: number, yaw: number, map: VoxelMa
   s.vy = Math.max(s.vy - GRAVITY * DT, -MAX_FALL_SPEED);
 
   const R = PLAYER_RADIUS;
+  // Подъём на ступеньку в один блок (0,5 м), если над ней есть место
+  const stepUp = (): boolean => {
+    if (!s.onGround) return false;
+    const ny = (Math.floor(s.y / VOXEL + 1e-4) + 1) * VOXEL + EPS;
+    if (ny - s.y > VOXEL + 0.01 || boxCollides(map, s.x, ny, s.z, h)) return false;
+    s.y = ny;
+    return true;
+  };
   // Ось X
   s.x += s.vx * DT;
-  if (boxCollides(map, s.x, s.y, s.z, h)) {
+  if (boxCollides(map, s.x, s.y, s.z, h) && !stepUp()) {
     if (s.vx > 0) s.x = Math.floor((s.x + R) / VOXEL) * VOXEL - R - EPS;
     else s.x = (Math.floor((s.x - R) / VOXEL) + 1) * VOXEL + R + EPS;
     s.vx = 0;
   }
   // Ось Z
   s.z += s.vz * DT;
-  if (boxCollides(map, s.x, s.y, s.z, h)) {
+  if (boxCollides(map, s.x, s.y, s.z, h) && !stepUp()) {
     if (s.vz > 0) s.z = Math.floor((s.z + R) / VOXEL) * VOXEL - R - EPS;
     else s.z = (Math.floor((s.z - R) / VOXEL) + 1) * VOXEL + R + EPS;
     s.vz = 0;

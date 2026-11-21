@@ -17,7 +17,8 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '').split(',').map((s) =
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 
 const accounts = new AccountStore(DATA_DIR);
-const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))));
+const START_MAPS = ['market', 'wasteland', 'quarter'];
+const room = new Room(BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))), process.env.START_MAP ?? START_MAPS[Math.floor(Math.random() * START_MAPS.length)]);
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
 let nextTick = performance.now();
@@ -291,6 +292,9 @@ function onSocket(ws: WebSocket, ip: string) {
         break;
       case 'chat':
         if (typeof msg.text === 'string') room.chat(conn, msg.text);
+        break;
+      case 'vote':
+        if (typeof msg.map === 'string') room.vote(conn, msg.map);
         break;
       case 'ping':
         ws.send(JSON.stringify({ t: 'pong', c: msg.c }));

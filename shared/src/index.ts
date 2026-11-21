@@ -7,3 +7,4 @@ export * from './body';
 export * from './weapons';
 export * from './protocol';
 export * from './nav';
+export * from './maps';

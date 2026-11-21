@@ -75,5 +75,5 @@ export const api = {
   deleteAccount: (password: string) => call('POST', 'delete', { password }),
   saveLoadout: (loadout: Loadout) => call<{ loadout: Loadout }>('PUT', 'loadout', { loadout }),
   saveSettings: (settings: Settings) => call<{ settings: Settings }>('PUT', 'settings', { settings }),
-  status: () => call<{ humans: number; bots: number; spectators: number; phase: string; round: number; score: [number, number]; map: string }>('GET', 'status'),
+  status: () => call<{ humans: number; bots: number; spectators: number; phase: string; round: number; score: [number, number]; map: string; mapId: string }>('GET', 'status'),
 };

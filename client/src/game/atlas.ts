@@ -61,6 +61,11 @@ const PATTERNS: Record<number, { side: Px; top?: Px }> = {
   [MAT.WOOD]: { side: (x, y, r) => (y % 3 === 2 ? 0x5e3e22 : 0x80583a) | (Math.floor(noise(r, 0.06) * 100) << 24) },
   [MAT.METAL]: { side: (x, y, r) => 0x6f767c | (Math.floor(noise(r, 0.05) * 100) << 24) },
   [MAT.ROOF]: { side: (x, y, r) => (y % 4 === 3 ? 0x8c3b25 : 0xb24f30) | (Math.floor(noise(r, 0.06) * 100) << 24) },
+  [MAT.GROUND]: { side: (x, y, r) => (r(5) > 0.8 ? 0xb8925e : 0xcfa874) | (Math.floor(noise(r, 0.05) * 100) << 24) },
+  [MAT.ROCK]: {
+    side: (x, y, r) => ((x * 7 + y * 3) % 11 === 0 ? 0x6e6258 : r(4) > 0.6 ? 0x8a7b6c : 0x9c8b78) | (Math.floor(noise(r, 0.07) * 100) << 24),
+    top: (x, y, r) => (r(6) > 0.7 ? 0x8f8270 : 0xa69684) | (Math.floor(noise(r, 0.05) * 100) << 24),
+  },
 };
 
 export function buildAtlas(): THREE.CanvasTexture {
@@ -113,4 +118,6 @@ export const MAT_COLORS: Record<number, number> = {
   [MAT.WOOD]: 0x80583a,
   [MAT.METAL]: 0x6f767c,
   [MAT.ROOF]: 0xb24f30,
+  [MAT.GROUND]: 0xcfa874,
+  [MAT.ROCK]: 0x948472,
 };

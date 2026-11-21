@@ -26,10 +26,10 @@ import type { Player, Room } from './room';
 export const BOT_NAMES = ['Алмаз', 'Буран', 'Ветер', 'Гром', 'Дюна', 'Ёрш', 'Жук', 'Зной', 'Искра', 'Кедр', 'Лис', 'Мираж', 'Нерпа', 'Оникс', 'Пума', 'Рысь', 'Сокол', 'Тайга', 'Ураган', 'Филин'];
 
 /** Настройки уровня. По умолчанию — средний. */
-export const BOT_LEVELS: Record<string, { react: [number, number]; aimErr: [number, number]; errDecay: number; sway: number; turnRate: number; headChance: number; fov: number; stopToShoot: number }> = {
-  easy: { react: [0.5, 0.8], aimErr: [0.12, 0.22], errDecay: 1.4, sway: 0.03, turnRate: 5, headChance: 0.08, fov: 1.1, stopToShoot: 0.6 },
-  medium: { react: [0.3, 0.5], aimErr: [0.08, 0.16], errDecay: 2.0, sway: 0.024, turnRate: 8, headChance: 0.15, fov: 1.25, stopToShoot: 0.8 },
-  hard: { react: [0.18, 0.3], aimErr: [0.04, 0.08], errDecay: 3.5, sway: 0.007, turnRate: 12, headChance: 0.4, fov: 1.35, stopToShoot: 0.9 },
+export const BOT_LEVELS: Record<string, { react: [number, number]; aimErr: [number, number]; errDecay: number; sway: number; turnRate: number; headChance: number; fov: number; stopToShoot: number; pause: [number, number] }> = {
+  easy: { react: [0.7, 1.1], aimErr: [0.18, 0.3], errDecay: 0.9, sway: 0.05, turnRate: 4, headChance: 0.02, fov: 1.0, stopToShoot: 0.5, pause: [0.5, 0.9] },
+  medium: { react: [0.5, 0.8], aimErr: [0.12, 0.22], errDecay: 1.3, sway: 0.035, turnRate: 6, headChance: 0.05, fov: 1.15, stopToShoot: 0.75, pause: [0.35, 0.7] },
+  hard: { react: [0.25, 0.4], aimErr: [0.06, 0.12], errDecay: 2.6, sway: 0.016, turnRate: 9, headChance: 0.2, fov: 1.3, stopToShoot: 0.85, pause: [0.2, 0.45] },
 };
 
 type Goal = { x: number; z: number; kind: 'site' | 'hold' | 'bomb' | 'investigate' | 'plant' | 'defuse' | 'guard'; until: number; lookYaw: number };
@@ -39,6 +39,11 @@ function angDiff(a: number, b: number): number {
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
   return d;
+}
+
+function spawnCenter(info: { spawns: [Array<[number, number]>, Array<[number, number]>] }, team: number): [number, number] {
+  const s = info.spawns[team];
+  return [s.reduce((a, p) => a + p[0], 0) / s.length, s.reduce((a, p) => a + p[1], 0) / s.length];
 }
 
 function yawTo(dx: number, dz: number): number {
@@ -77,6 +82,8 @@ export class Bot {
   private scanPhase = 0;
   private lastPos: [number, number] = [0, 0];
   private holding = false;
+  private strafing = false;
+  private runAndGun = false;
   /** постоянное «дрожание» прицела: у среднего бота не бывает идеальной наводки */
   private swayY = 0;
   private swayP = 0;
@@ -182,7 +189,8 @@ export class Bot {
     if (p.team === TEAM_T) {
       if (b.status === 'planted') {
         const pt = r.nav.randomIn(b.x - 6, b.z - 6, b.x + 6, b.z + 6, rnd) ?? [b.x, b.z];
-        this.setGoal(pt[0], pt[1], 'guard', 60, yawTo(info.mid[0] - pt[0], 46 - pt[1]));
+        const ct = spawnCenter(info, TEAM_CT);
+        this.setGoal(pt[0], pt[1], 'guard', 60, yawTo(ct[0] - pt[0], ct[1] - pt[1]));
         return;
       }
       if (b.status === 'dropped') {
@@ -209,16 +217,17 @@ export class Bot {
         return;
       }
       // роли: 2 на A, 2 на B, 1 в центре
-      const roleSite = [0, 1, 0, 1, 2][this.role % 5];
+      const roleSite = (info.ctRoles ?? [0, 1, 0, 1, 2])[this.role % 5];
       let pt: [number, number] | null;
-      if (roleSite === 2) pt = r.nav.randomIn(info.mid[0] - 4, info.mid[1] - 2, info.mid[0] + 4, info.mid[1] + 4, rnd);
+      if (roleSite === 2) pt = r.nav.coverIn(info.mid[0] - 4, info.mid[1] - 2, info.mid[0] + 4, info.mid[1] + 4, rnd);
       else {
         const s = info.sites[roleSite];
-        pt = r.nav.randomIn(s.x0, s.z0 + 3, s.x1, s.z1, rnd);
+        pt = r.nav.coverIn(s.x0, s.z0 + 3, s.x1, s.z1, rnd);
       }
       pt ??= [info.mid[0], info.mid[1]];
       // держит угол: смотрит на юг, в сторону подходов нападения
-      const look = yawTo((roleSite === 0 ? 10 : roleSite === 1 ? 38 : 24) - pt[0], 15 - pt[1]);
+      const ts = spawnCenter(info, TEAM_T);
+      const look = yawTo(ts[0] - pt[0], ts[1] - pt[1]);
       this.setGoal(pt[0], pt[1], 'hold', 200, look);
     }
   }
@@ -256,7 +265,7 @@ export class Bot {
         if (p.team === TEAM_CT) for (const q of r.players) if (q !== p && q.team === TEAM_CT) q.bot?.callout(best.st.x, best.st.z);
         const a = this.rng.next() * Math.PI * 2;
         this.errYaw = Math.cos(a) * err;
-        this.errPitch = Math.sin(a) * err * 0.6;
+        this.errPitch = Math.sin(a) * err * 0.3;
         this.aimHead = this.rng.next() < this.lv.headChance;
         this.crouchFight = bestD > 15 && this.rng.next() < 0.25;
         this.burstLeft = 0;
@@ -310,7 +319,7 @@ export class Bot {
     if (t && t.alive && r.phase !== 'freeze') {
       // ---- Бой ----
       const [ex, ey, ez] = p.eye();
-      const aimY = t.st.y + (this.aimHead ? (t.st.crouch ? 1.12 : 1.62) : t.st.crouch ? 0.85 : 1.15);
+      const aimY = t.st.y + (this.aimHead ? (t.st.crouch ? 1.12 : 1.62) : t.st.crouch ? 0.75 : 1.02);
       const dx = t.st.x - ex,
         dz = t.st.z - ez,
         dy = aimY - ey;
@@ -319,7 +328,7 @@ export class Bot {
         // кто стоит на позиции, целится спокойнее
         const steady = this.holding ? 0.6 : 1;
         this.swayTY = this.rng.range(-1, 1) * this.lv.sway * steady;
-        this.swayTP = this.rng.range(-1, 1) * this.lv.sway * 0.8 * steady;
+        this.swayTP = this.rng.range(-1, 1) * this.lv.sway * 0.35 * steady;
       }
       this.swayY += (this.swayTY - this.swayY) * 0.15;
       this.swayP += (this.swayTP - this.swayP) * 0.15;
@@ -330,28 +339,38 @@ export class Bot {
       this.errPitch *= decay;
       this.turnToward(wantYaw, wantPitch);
       const aimOff = Math.hypot(angDiff(this.yaw, wantYaw), this.pitch - wantPitch);
-      if (now >= this.reactAt && aimOff < 0.06 && now >= this.pauseUntil) {
-        const def = (slot === SLOT_PRIMARY ? p.primary?.def : p.pistol.def) ?? p.pistol.def;
+      // стреляет, только когда прицел уже на силуэте (допуск по размеру цели на этой дистанции)
+      const tol = Math.max(0.012, Math.atan2(0.3, dist));
+      // отрезки боя: чаще стоит и стреляет, иногда стрейфит (и тогда редко стреляет на ходу)
+      if (now >= this.strafeUntil) {
+        this.strafing = this.rng.next() > this.lv.stopToShoot;
+        this.strafeDir = this.rng.next() < 0.5 ? -1 : 1;
+        this.strafeUntil = now + (this.strafing ? this.rng.range(0.3, 0.7) : this.rng.range(0.7, 1.4));
+        this.runAndGun = this.rng.next() < 0.25;
+      }
+      const speed = Math.hypot(p.st.vx, p.st.vz);
+      const def = (slot === SLOT_PRIMARY ? p.primary?.def : p.pistol.def) ?? p.pistol.def;
+      const inRange = def.kind !== 'shotgun' || dist < 15;
+      const steadyEnough = speed < 1.8 || (this.strafing && this.runAndGun);
+      if (now >= this.reactAt && aimOff < tol && now >= this.pauseUntil && inRange && steadyEnough) {
         if (def.auto) {
-          if (this.burstLeft <= 0) this.burstLeft = dist > 20 ? this.rng.int(3) + 2 : this.rng.int(5) + 3;
+          if (this.burstLeft <= 0) this.burstLeft = dist > 15 ? this.rng.int(2) + 1 : this.rng.int(3) + 2;
           buttons |= BTN_FIRE;
           if (p.simTime >= p.nextFire - DT) {
             this.burstLeft--;
-            if (this.burstLeft <= 0) this.pauseUntil = now + this.rng.range(0.2, 0.45);
+            if (this.burstLeft <= 0) this.pauseUntil = now + this.rng.range(this.lv.pause[0], this.lv.pause[1]);
           }
         } else {
           this.firePressed = !this.firePressed;
-          if (this.firePressed) buttons |= BTN_FIRE;
+          if (this.firePressed && p.simTime >= p.nextFire - DT) {
+            buttons |= BTN_FIRE;
+            // одиночные — с паузой, а не с максимальной скорострельностью
+            this.pauseUntil = now + this.rng.range(this.lv.pause[0], this.lv.pause[1]) * 0.6;
+          }
         }
       }
-      // обычно останавливается перед стрельбой, иногда двигается вбок
-      if (this.rng.next() > this.lv.stopToShoot || now < this.strafeUntil) {
-        if (now >= this.strafeUntil) {
-          this.strafeDir = this.rng.next() < 0.5 ? -1 : 1;
-          this.strafeUntil = now + this.rng.range(0.3, 0.7);
-        }
-        buttons |= this.strafeDir > 0 ? BTN_RIGHT : BTN_LEFT;
-      }
+      if (this.strafing) buttons |= this.strafeDir > 0 ? BTN_RIGHT : BTN_LEFT;
+      else if (!inRange) buttons |= BTN_FWD; // с дробовиком сближается
       if (this.crouchFight) buttons |= BTN_CROUCH;
     } else if (this.goal) {
       // ---- Передвижение ----

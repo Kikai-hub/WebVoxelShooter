@@ -10,6 +10,7 @@ import {
   SLOT_PRIMARY,
   WEAPONS,
   zoneName,
+  MAP_LIST,
   type MapInfo,
   type PublicPlayer,
   type RoomState,
@@ -68,6 +69,7 @@ export class Hud {
   chatOpen = false;
   onChat: ((text: string) => void) | null = null;
   onBuy: ((item: string) => void) | null = null;
+  onChatClose: (() => void) | null = null;
   preferred: { primary: string; pistol: string } = { primary: 'vikhr', pistol: 'osa' };
 
   constructor(
@@ -134,6 +136,40 @@ export class Hud {
     this.buyMenu.style.display = 'none';
   }
 
+  setMap(info: MapInfo) {
+    this.mapInfo = info;
+    this.mapImg = this.renderMapImage();
+  }
+
+  /** Окно голосования за следующую карту. */
+  private voteEl: HTMLDivElement | null = null;
+  showVote(st: RoomState | null, myVote: string, onVote: (id: string) => void) {
+    const open = !!st && st.ph === 'vote';
+    if (!open) {
+      this.voteEl?.remove();
+      this.voteEl = null;
+      return;
+    }
+    if (!this.voteEl) {
+      this.voteEl = el('div', 'vote', this.root);
+    }
+    const key = JSON.stringify([st!.votes, myVote, Math.ceil(st!.tl)]);
+    if (this.voteEl.dataset.key === key) return;
+    this.voteEl.dataset.key = key;
+    this.voteEl.innerHTML = '';
+    el('div', 'vote-title', this.voteEl, `ГОЛОСОВАНИЕ ЗА КАРТУ · ${Math.ceil(st!.tl)} с`);
+    const row = el('div', 'vote-row', this.voteEl);
+    MAP_LIST.forEach((m, i) => {
+      const card = el('button', 'vote-card' + (myVote === m.id ? ' mine' : '') + (st!.map === m.id ? ' current' : ''), row);
+      el('span', 'slot-key', card, String(i + 1));
+      el('b', '', card, m.name);
+      el('span', 'vote-desc', card, m.desc);
+      el('span', 'vote-count', card, `${st!.votes[m.id] ?? 0} гол.`);
+      card.onclick = () => onVote(m.id);
+    });
+    el('div', 'buy-hint', this.voteEl, 'Клавиши 1–3 или клик · при ничьей выбирается случайная карта из лидеров');
+  }
+
   private renderMapImage(): HTMLCanvasElement {
     const m = this.mapInfo.map;
     const c = document.createElement('canvas');
@@ -168,7 +204,7 @@ export class Hud {
     g.fillStyle = '#fff';
     g.font = 'bold 10px sans-serif';
     this.mapInfo.sites.forEach((s, i) => {
-      g.fillText(this.mapInfo.siteNames[i], ((s.x0 + s.x1) / 2) * 2 - 3, (48 - (s.z0 + s.z1) / 2) * 2 + 4);
+      g.fillText(this.mapInfo.siteNames[i], ((s.x0 + s.x1) / 2) * 2 - 3, (this.mapInfo.map.depth - (s.z0 + s.z1) / 2) * 2 + 4);
     });
     return c;
   }
@@ -306,6 +342,7 @@ export class Hud {
     this.chatInput.blur();
     this.chatInput.style.display = 'none';
     this.chatLog.classList.remove('open');
+    this.onChatClose?.();
   }
 
   drawMinimap(px: number, pz: number, yaw: number, dots: Array<{ x: number; z: number; c: string; me?: boolean; yaw?: number }>, bomb: { x: number; z: number; planted: boolean } | null) {
@@ -323,7 +360,7 @@ export class Hud {
     g.rotate(Math.PI - yaw);
     g.imageSmoothingEnabled = false;
     // карта: 1 пиксель изображения = 0,5 м
-    g.drawImage(this.mapImg, -px * scale, -(48 - pz) * scale, this.mapImg.width * 2, this.mapImg.height * 2);
+    g.drawImage(this.mapImg, -px * scale, -(this.mapInfo.map.depth - pz) * scale, this.mapImg.width * 2, this.mapImg.height * 2);
     const toMap = (x: number, z: number): [number, number] => [(x - px) * scale, -(z - pz) * scale];
     if (bomb) {
       const [bx, by] = toMap(bomb.x, bomb.z);

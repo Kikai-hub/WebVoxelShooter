@@ -184,6 +184,8 @@ function showMenu(tab: Tab = 'play') {
       const s = await api.status();
       const ping = Math.round(performance.now() - t0);
       online.textContent = `В комнате: ${s.humans} игр. · ${s.bots} бот. · ${s.spectators} набл. · пинг ${ping} мс`;
+      const cm = document.querySelector('.cur-map');
+      if (cm) cm.textContent = s.map;
       const pc = document.querySelector('.play-count');
       if (pc) pc.textContent = `${s.humans} живых игроков · ${s.bots} ботов · счёт ${s.score[0]}:${s.score[1]} · раунд ${s.round}`;
     } catch {
@@ -194,18 +196,18 @@ function showMenu(tab: Tab = 'play') {
   statusTimer = window.setInterval(pollStatus, 5000);
 
   if (tab === 'play') {
-    const left = h('div', { class: 'panel modes' }, h('div', { class: 'panel-title' }, 'РЕЖИМ'), h('div', { class: 'mode active' }, h('b', {}, 'Бомба · 5×5'), h('span', {}, 'Одна комната на сайте. Пустые места занимают боты.')), h('div', { class: 'mode' }, h('b', {}, 'Карта'), h('span', {}, 'Рыночная площадь')));
+    const left = h('div', { class: 'panel modes' }, h('div', { class: 'panel-title' }, 'РЕЖИМ'), h('div', { class: 'mode active' }, h('b', {}, 'Бомба · 5×5'), h('span', {}, 'Одна комната на сайте. Пустые места занимают боты.')), h('div', { class: 'mode' }, h('b', {}, 'Карта сейчас'), h('span', { class: 'cur-map' }, '…'), h('span', {}, 'После каждого матча — голосование из трёх карт.')));
     const right = h(
       'div',
       { class: 'panel news' },
       h('div', { class: 'panel-title' }, 'НОВОСТИ'),
       h('div', { class: 'card' }, h('b', {}, 'Воксельные раны'), h('span', {}, 'Каждое попадание оставляет дыру, голова может разлететься на кубики, тела лежат до конца раунда.')),
       h('div', { class: 'card' }, h('b', {}, 'Боты среднего уровня'), h('span', {}, 'Видят только то, что в поле зрения, слышат выстрелы и держат углы.')),
-      h('div', { class: 'card' }, h('b', {}, 'Скоро'), h('span', {}, '«Пустошь» и «Старый квартал», голосование за карту.')),
+      h('div', { class: 'card' }, h('b', {}, 'Три карты'), h('span', {}, '«Рыночная площадь», открытая «Пустошь» и тесный «Старый квартал» с крышей над двором. Карту выбирают игроки.')),
     );
     const play = h('button', { class: 'play-btn' }, 'ИГРАТЬ');
     const count = h('div', { class: 'play-count' }, '');
-    play.onclick = () => startGame();
+    play.onclick = () => void startGame();
     const playBox = h('div', { class: 'play-box' }, play, count);
     body.append(left, center, right, playBox);
     agentView = new AgentView(canvas);
@@ -493,8 +495,14 @@ function renderSettings(body: HTMLElement) {
 
 // ---------- Игра ----------
 
-function startGame() {
+async function startGame() {
   if (!account) return;
+  let mapId = 'market';
+  try {
+    mapId = (await api.status()).mapId ?? 'market';
+  } catch {
+    /* узнаем из полного состояния */
+  }
   stopMenu();
   app.innerHTML = '';
   game = new Game(app, account, () => {
@@ -503,7 +511,7 @@ function startGame() {
       account = r.account;
       showMenu();
     }, () => boot());
-  });
+  }, mapId);
   if (import.meta.env.DEV) (window as any).__vts = game;
   game.onSettingsChanged = debounce((s: Settings) => {
     account!.settings = s;

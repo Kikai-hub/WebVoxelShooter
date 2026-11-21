@@ -199,6 +199,31 @@ export class NavGrid {
     return out;
   }
 
+  /** Точка с укрытием: проходимая, рядом много непроходимых клеток (стены, ящики). */
+  coverIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number] | null {
+    let best: [number, number] | null = null;
+    let bestScore = -1;
+    for (let i = 0; i < 40; i++) {
+      const p = this.randomIn(x0, z0, x1, z1, rnd);
+      if (!p) continue;
+      const cx = Math.floor(p[0] / VOXEL),
+        cz = Math.floor(p[1] / VOXEL);
+      let score = 0;
+      for (let dz = -3; dz <= 3; dz++)
+        for (let dx = -3; dx <= 3; dx++) {
+          const x = cx + dx,
+            z = cz + dz;
+          if (x < 0 || z < 0 || x >= this.w || z >= this.h || !this.walk[x + z * this.w]) score++;
+        }
+      score += rnd() * 4; // не всегда одна и та же позиция
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+    return best;
+  }
+
   /** Случайная проходимая точка внутри прямоугольника. */
   randomIn(x0: number, z0: number, x1: number, z1: number, rnd: () => number): [number, number] | null {
     for (let i = 0; i < 60; i++) {

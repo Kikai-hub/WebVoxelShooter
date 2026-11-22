@@ -37,6 +37,7 @@ import {
   defaultBinds,
   keyLabel,
   sanitizeBinds,
+  sanitizeCrosshair,
   type Action,
   type Binds,
   OT_MONEY,
@@ -226,6 +227,8 @@ export class Game {
     private onExit: (msg?: string) => void,
     mapId = 'market',
     private mode: GameMode = 'public',
+    /** комната, выбранная лидером лобби (паблик вместе) */
+    private roomId?: string,
   ) {
     this.settings = { ...account.settings };
     this.info = (MAPS[mapId] ?? MAPS.market)();
@@ -371,7 +374,8 @@ export class Game {
   }
 
   applySettings(s: Settings) {
-    this.settings = { ...s, binds: sanitizeBinds(s.binds) };
+    this.settings = { ...s, binds: sanitizeBinds(s.binds), crosshair: sanitizeCrosshair(s.crosshair) };
+    this.hud.setCrosshairCfg(this.settings.crosshair);
     this.binds = this.settings.binds;
     this.updatePauseHint();
     this.camera.fov = s.fov * 0.75;
@@ -442,7 +446,7 @@ export class Game {
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
-      ws.send(JSON.stringify({ t: 'auth', token: getToken(), mode: this.mode }));
+      ws.send(JSON.stringify({ t: 'auth', token: getToken(), mode: this.mode, ...(this.roomId ? { room: this.roomId } : {}) }));
     };
     ws.onmessage = (e) => {
       if (typeof e.data === 'string') {
@@ -533,6 +537,9 @@ export class Game {
         this.hud.showCenter(m.won ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ', this.resultMsg, 15, performance.now() / 1000, m.won ? '' : 'warn');
         break;
       }
+      case 'av':
+        this.hud.setAvatars(m.a);
+        break;
       case 'err':
         this.hud.info(m.msg);
         break;

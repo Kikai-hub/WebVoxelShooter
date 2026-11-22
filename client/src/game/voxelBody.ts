@@ -177,7 +177,7 @@ export class VoxelBody {
     }
     if (kind === 'knife') {
       // нож стороны: керамбит у нападения, штык-нож у защиты
-      this.gunModel = makeKnife(KNIFE_OF_TEAM[this.team === 0 ? 0 : 1], SKINS[this.skin]?.tint ?? 0xffffff);
+      this.gunModel = makeKnife(KNIFE_OF_TEAM[this.team === 0 ? 0 : 1], SKINS[this.skin]?.tint ?? 0xffffff, true);
       this.gunModel.userData.knife = true;
       this.gunHolder.add(this.gunModel);
       this.gun.visible = false;

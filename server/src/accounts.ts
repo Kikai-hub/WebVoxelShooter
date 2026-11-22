@@ -3,11 +3,11 @@
 // токены сессий — хэш SHA-256. Баны по аккаунту и IP.
 
 import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { DEFAULT_LOADOUT, type Loadout } from './room';
-import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS, defaultBinds, sanitizeBinds, newRatings, type Binds, type Ratings } from '../../shared/src/index';
+import { WEAPON_BY_KEY, SLOT_PRIMARY, SLOT_PISTOL, SKINS, defaultBinds, sanitizeBinds, newRatings, DEFAULT_CROSSHAIR, sanitizeCrosshair, type Binds, type Crosshair, type Ratings } from '../../shared/src/index';
 
 const scrypt = promisify(scryptCb) as (pw: string, salt: Buffer, len: number, opts: object) => Promise<Buffer>;
 const SCRYPT_OPTS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -21,9 +21,11 @@ export interface Settings {
   volume: number;
   /** управление: действие → до двух клавиш */
   binds: Binds;
+  /** свой прицел (видит только сам игрок) */
+  crosshair: Crosshair;
 }
 
-export const DEFAULT_SETTINGS: Settings = { sens: 1, fov: 90, tracers: true, tracerBright: 1, blood: 'blood', volume: 0.7, binds: defaultBinds() };
+export const DEFAULT_SETTINGS: Settings = { sens: 1, fov: 90, tracers: true, tracerBright: 1, blood: 'blood', volume: 0.7, binds: defaultBinds(), crosshair: DEFAULT_CROSSHAIR };
 
 /** Статистика игрока за всё время (только живые игроки, боты не считаются). */
 export interface PlayerStats {
@@ -52,6 +54,7 @@ export function emptyStats(): PlayerStats {
 export interface TopRow {
   place: number;
   login: string;
+  avatar?: string | null;
   elo?: number;
   rank?: number | null;
   matches: number;
@@ -72,6 +75,8 @@ export interface Account {
   stats?: PlayerStats;
   /** рейтинги матчмейкинга (Elo) и союзников (звание) */
   ratings?: Ratings;
+  /** аватарка: случайный ключ файла data/avatars/<ключ>.jpg (меняется при каждой загрузке) */
+  avatar?: string;
 }
 
 interface Session {
@@ -103,8 +108,12 @@ export class AccountStore {
   private attemptsAcc = new Map<string, { n: number; lockUntil: number }>();
   private registrationsIp = new Map<string, { n: number; reset: number }>();
 
+  private avatarDir: string;
+
   constructor(dir: string) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    this.avatarDir = join(dir, 'avatars');
+    if (!existsSync(this.avatarDir)) mkdirSync(this.avatarDir, { recursive: true });
     this.file = join(dir, 'accounts.json');
     if (existsSync(this.file)) {
       try {
@@ -263,8 +272,51 @@ export class AccountStore {
     this.db.accounts = this.db.accounts.filter((a) => a !== acc);
     this.byLogin.delete(acc.loginLower);
     this.byId.delete(acc.id);
+    this.removeAvatarFile(acc.avatar);
     this.save();
     return null;
+  }
+
+  // ---------- Аватарка ----------
+
+  /** Сохранить новую аватарку (уже проверенный JPEG); старая удаляется. */
+  setAvatar(acc: Account, jpeg: Buffer) {
+    const key = randomBytes(12).toString('hex');
+    writeFileSync(join(this.avatarDir, key + '.jpg'), jpeg);
+    this.removeAvatarFile(acc.avatar);
+    acc.avatar = key;
+    this.topCache = { mm: null, wm: null };
+    this.save();
+  }
+
+  clearAvatar(acc: Account) {
+    this.removeAvatarFile(acc.avatar);
+    delete acc.avatar;
+    this.topCache = { mm: null, wm: null };
+    this.save();
+  }
+
+  /** Адрес аватарки для клиента или null. */
+  avatarUrl(acc: Account | undefined): string | null {
+    return acc?.avatar ? `/api/avatar/${acc.avatar}.jpg` : null;
+  }
+
+  /** Путь к файлу аватарки по ключу из адреса (только 24 hex-символа — без выхода из папки). */
+  avatarFile(key: string): string | null {
+    if (!/^[a-f0-9]{24}$/.test(key)) return null;
+    const p = join(this.avatarDir, key + '.jpg');
+    return existsSync(p) ? p : null;
+  }
+
+  private removeAvatarFile(key: string | undefined) {
+    const p = key ? this.avatarFile(key) : null;
+    if (p) {
+      try {
+        unlinkSync(p);
+      } catch {
+        /* уже удалён */
+      }
+    }
   }
 
   private newSession(acc: Account): string {
@@ -317,6 +369,12 @@ export class AccountStore {
     if (Object.keys(d).some((k) => k !== 'playSeconds')) this.save();
   }
 
+  /** Аккаунт по нику (без учёта регистра). */
+  findByLogin(login: string): Account | undefined {
+    const a = this.byLogin.get(login.trim().toLowerCase());
+    return a && !a.banned ? a : undefined;
+  }
+
   /** Аккаунт по id (для рейтингов в конце матча). */
   get(accountId: string): Account | undefined {
     return this.byId.get(accountId);
@@ -353,7 +411,7 @@ export class AccountStore {
   topRow(a: Account, place: number, mode: 'mm' | 'wm'): TopRow {
     const r = this.ratings(a);
     const s = mode === 'mm' ? r.mm : r.wm;
-    return { place, login: a.login, elo: mode === 'mm' ? r.mm.elo : undefined, rank: mode === 'wm' ? r.wm.rank : undefined, matches: s.matches, wins: s.wins };
+    return { place, login: a.login, avatar: this.avatarUrl(a), elo: mode === 'mm' ? r.mm.elo : undefined, rank: mode === 'wm' ? r.wm.rank : undefined, matches: s.matches, wins: s.wins };
   }
 
   /** Рейтинги изменились — сохранить. */
@@ -408,6 +466,7 @@ export function sanitizeSettings(s: unknown): Settings {
     blood: o.blood === 'confetti' ? 'confetti' : 'blood',
     volume: num(o.volume, 0, 1, DEFAULT_SETTINGS.volume),
     binds: sanitizeBinds(o.binds),
+    crosshair: sanitizeCrosshair(o.crosshair),
   };
 }
 

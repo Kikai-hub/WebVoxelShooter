@@ -1702,3 +1702,302 @@ input {
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   }
 }
+
+/* ---------- Лобби: кружки в верхней панели, окно со списком и приглашения ---------- */
+.lobby-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.lobby-bar:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.lobby-ava {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--wide);
+  font-size: 12px;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+.lobby-ava.leader {
+  border-color: var(--accent);
+}
+.lobby-ava.offline {
+  opacity: 0.45;
+}
+.lobby-plus {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.35);
+  background: none;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lobby-pop {
+  position: absolute;
+  top: 68px;
+  right: 16px;
+  z-index: 25;
+  width: 340px;
+  padding: 14px;
+  background: rgba(14, 16, 20, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+}
+.lobby-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.lobby-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.lobby-row b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lobby-rank {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.lobby-rank.wm {
+  color: #8fb4ff;
+}
+.lobby-kick {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+.lobby-kick:hover {
+  color: #ff6b5a;
+}
+.lobby-invite {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+.lobby-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text);
+}
+.lobby-msg {
+  margin: 4px 0 8px;
+}
+.btn.danger {
+  border-color: rgba(255, 90, 70, 0.5);
+  color: #ff8a7a;
+}
+.invite-toasts {
+  position: absolute;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.invite-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(14, 16, 20, 0.96);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  font-size: 14px;
+}
+.invite-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: 6px;
+}
+.btn.primary {
+  background: linear-gradient(#f6c45c, #d9952c);
+  color: #1a1306;
+  border-color: transparent;
+}
+
+/* ---------- Свой прицел: в игре — канвас, в настройках — предпросмотр ---------- */
+.ch-canvas {
+  position: absolute;
+  left: -80px;
+  top: -80px;
+  width: 160px;
+  height: 160px;
+  pointer-events: none;
+}
+.ch-preview-box {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #8a7d63 0%, #c9b48a 45%, #5d6b78 55%, #2d3440 100%);
+}
+.ch-preview {
+  width: 220px;
+  height: 140px;
+  display: block;
+}
+.ch-styles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.ch-colors {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.ch-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+  padding: 0;
+}
+.ch-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.ch-colors input[type='color'] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+/* ---------- Аватарки ---------- */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 50%;
+  color: #fff;
+  font-family: var(--wide);
+  background-size: cover;
+  background-position: center;
+}
+.nick-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nick-av {
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.top-av {
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
+}
+.avatar-edit {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.avatar-big {
+  width: 72px;
+  height: 72px;
+  font-size: 28px;
+  border: 2px solid var(--line);
+}
+.avatar-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.portrait.has-av {
+  background-size: cover;
+  background-position: center;
+  color: transparent;
+}
+.board-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.board-av {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* блок прицела: элементы не сжимаются в колонке панели (иначе предпросмотр схлопывается) */
+.crosshair-panel > * {
+  flex-shrink: 0;
+}
+
+/* ---------- Настройки: страница с прокруткой, блоки — во всю высоту, без вложенной прокрутки ---------- */
+.menu-body.settings-page {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.settings-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* блоки во всю высоту, без своей прокрутки */
+.settings-page .panel {
+  max-height: none;
+  overflow: visible;
+  flex: none;
+}
+@media (max-width: 900px) {
+  .menu-body.settings-page {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+.settings-page .row {
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 44px;
+}

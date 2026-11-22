@@ -3,8 +3,8 @@
 
 import './style.css';
 import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
-import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type QueueState, type RankedMode, type Settings, type TopRow } from './api';
-import { mmLevel, WM_RANKS, type GameMode } from '../../shared/src/index';
+import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type PartyState, type QueueState, type RankedMode, type Settings, type TopRow } from './api';
+import { mmLevel, WM_RANKS, CROSSHAIR_STYLES, CROSSHAIR_STYLE_NAMES, DEFAULT_CROSSHAIR, drawCrosshair, sanitizeCrosshair, type GameMode } from '../../shared/src/index';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
 import { agentRender, weaponRender } from './ui/itemRenders';
@@ -18,6 +18,12 @@ const app = document.getElementById('app')!;
 let account: AccountInfo | null = null;
 let agentView: AgentView | null = null;
 let statusTimer = 0;
+/** лобби: опрос раз в 2 с, пока открыто меню */
+let partyTimer = 0;
+let partyState: PartyState | null = null;
+/** запуск паблика лидером, который уже обработан (старые не повторяем) */
+let lastGoAt = Date.now();
+const shownInvites = new Set<string>();
 let game: Game | null = null;
 /** сообщение после возвращения из игры (итог рейтингового матча и т. п.) */
 let menuNotice = '';
@@ -163,7 +169,7 @@ function showMenu(tab: Tab = 'play') {
   }
   menu.append(bg);
   const top = h('div', { class: 'topbar' });
-  const nick = h('div', { class: 'nick' }, h('div', { class: 'nick-name' }, account.login), ...rankLines(account));
+  const nick = h('div', { class: 'nick' }, h('div', { class: 'nick-name' }, avatarEl(account.login, account.avatar, 'nick-av'), account.login), ...rankLines(account));
   const nav = h('div', { class: 'nav' });
   const tabs: Array<[Tab, string]> = [
     ['play', 'ИГРАТЬ'],
@@ -178,7 +184,11 @@ function showMenu(tab: Tab = 'play') {
     nav.append(b);
   }
   const online = h('div', { class: 'online' }, '…');
-  top.append(nick, nav, online);
+  const lobbyBar = h('div', { class: 'lobby-bar' });
+  top.append(nick, nav, lobbyBar, online);
+  const lobby = setupLobby(lobbyBar, menu);
+  void lobby.poll();
+  partyTimer = window.setInterval(() => void lobby.poll(), 2000);
   menu.append(top);
 
   const body = h('div', { class: 'menu-body' });
@@ -269,6 +279,7 @@ function stopMenu() {
   agentView?.dispose();
   agentView = null;
   clearInterval(statusTimer);
+  clearInterval(partyTimer);
 }
 
 function statBars(def: WeaponDef): HTMLElement {
@@ -319,7 +330,7 @@ function renderTop(panel: HTMLElement, mode: RankedMode = 'mm') {
           'div',
           { class: 'top-row' + (me ? ' me' : '') + (t.place <= 3 ? ' podium p' + t.place : '') },
           h('span', { class: 'top-place' }, String(t.place)),
-          h('span', { class: 'top-name' }, badge, t.login),
+          h('span', { class: 'top-name' }, avatarEl(t.login, t.avatar, 'top-av'), badge, t.login),
           h('span', { class: 'top-value' }, value),
           h('span', { class: 'top-wr', title: `матчей ${t.matches}, побед ${t.wins}` }, wr),
         );
@@ -605,6 +616,8 @@ function renderLoadout(body: HTMLElement, center: HTMLElement, canvas: HTMLCanva
 }
 
 function renderSettings(body: HTMLElement) {
+  // вкладка настроек — обычная прокручиваемая страница: блоки во всю высоту, без своих полос прокрутки
+  body.classList.add('settings-page');
   const s: Settings = { ...account!.settings };
   const panel = h('div', { class: 'panel settings' });
   body.append(panel);
@@ -718,9 +731,137 @@ function renderSettings(body: HTMLElement) {
   obs.observe(document.body, { childList: true, subtree: true });
   renderBinds();
 
+  // ---- Прицел: свой, сохраняется в аккаунте, видит только сам игрок ----
+  s.crosshair = sanitizeCrosshair(s.crosshair);
+  const chPanel = h('div', { class: 'panel settings crosshair-panel' });
+  body.append(chPanel);
+  const prev = h('canvas', { class: 'ch-preview' }) as HTMLCanvasElement;
+  prev.width = 220;
+  prev.height = 140;
+  let demoSpread = 0;
+  const drawPrev = () => drawCrosshair(prev.getContext('2d')!, 220, 140, s.crosshair, demoSpread);
+  let saveTimer = 0;
+  const changed = () => {
+    drawPrev();
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => void save(), 400);
+  };
+  const renderCh = () => {
+    chPanel.innerHTML = '';
+    const c = s.crosshair;
+    chPanel.append(h('div', { class: 'panel-title' }, 'ПРИЦЕЛ'), h('div', { class: 'ch-preview-box' }, prev));
+    const styles = h('div', { class: 'ch-styles' });
+    for (const st of CROSSHAIR_STYLES) {
+      const b = h('button', { class: 'btn small' + (c.style === st ? ' active' : '') }, CROSSHAIR_STYLE_NAMES[st]);
+      b.onclick = () => {
+        c.style = st;
+        renderCh();
+        changed();
+      };
+      styles.append(b);
+    }
+    chPanel.append(styles);
+    const colors = h('div', { class: 'ch-colors' });
+    for (const col of ['#7dff7d', '#ffffff', '#ffe14d', '#00e5ff', '#ff4d6d', '#ff8c1a', '#c77dff']) {
+      const b = h('button', { class: 'ch-swatch' + (c.color === col ? ' active' : ''), title: col });
+      b.style.background = col;
+      b.onclick = () => {
+        c.color = col;
+        renderCh();
+        changed();
+      };
+      colors.append(b);
+    }
+    const pick = h('input', { type: 'color', value: c.color, title: 'Свой цвет' }) as HTMLInputElement;
+    pick.oninput = () => {
+      c.color = pick.value;
+      changed();
+    };
+    colors.append(pick);
+    chPanel.append(h('label', { class: 'row' }, h('span', {}, 'Цвет'), colors));
+    const slider = (label: string, key: 'size' | 'thickness' | 'gap' | 'alpha', min: number, max: number, step: number) => {
+      const val = h('em', {}, String(c[key]));
+      const inp = h('input', { type: 'range', min: String(min), max: String(max), step: String(step), value: String(c[key]) }) as HTMLInputElement;
+      inp.oninput = () => {
+        c[key] = Number(inp.value);
+        val.textContent = inp.value;
+        changed();
+      };
+      chPanel.append(h('label', { class: 'row' }, h('span', {}, label), inp, val));
+    };
+    slider('Длина штриха', 'size', 1, 24, 1);
+    slider('Толщина', 'thickness', 1, 8, 1);
+    slider('Зазор', 'gap', 0, 20, 1);
+    slider('Непрозрачность', 'alpha', 0.2, 1, 0.05);
+    const flag = (label: string, key: 'outline' | 'dynamic') => {
+      const inp = h('input', { type: 'checkbox' }) as HTMLInputElement;
+      inp.checked = c[key];
+      inp.onchange = () => {
+        c[key] = inp.checked;
+        changed();
+      };
+      chPanel.append(h('label', { class: 'row' }, h('span', {}, label), inp));
+    };
+    flag('Обводка', 'outline');
+    flag('Расходится при стрельбе и беге', 'dynamic');
+    const reset = h('button', { class: 'btn' }, 'Прицел по умолчанию');
+    reset.onclick = () => {
+      s.crosshair = { ...DEFAULT_CROSSHAIR };
+      renderCh();
+      changed();
+    };
+    chPanel.append(reset, h('div', { class: 'hint' }, 'Прицел видите только вы. Сохраняется в аккаунте — на любом устройстве.'));
+    drawPrev();
+  };
+  renderCh();
+  // в предпросмотре динамический прицел «дышит», как при стрельбе
+  const breathe = window.setInterval(() => {
+    if (!prev.isConnected) return clearInterval(breathe);
+    demoSpread = s.crosshair.dynamic ? Math.round((Math.sin(performance.now() / 500) + 1) * 5) : 0;
+    drawPrev();
+  }, 60);
+
   const acc = h('div', { class: 'panel settings' });
   body.append(acc);
   acc.append(h('div', { class: 'panel-title' }, 'АККАУНТ'));
+  // аватарка: видна всем — в лобби, в рейтинге, в игре; хранится, пока не смените или не удалите аккаунт
+  const avBox = h('div', { class: 'avatar-edit' });
+  const avMsg = h('div', { class: 'hint' });
+  const renderAv = () => {
+    avBox.innerHTML = '';
+    const file = h('input', { type: 'file', accept: 'image/*' }) as HTMLInputElement;
+    file.style.display = 'none';
+    const up = h('button', { class: 'btn small' }, account!.avatar ? 'Сменить аватарку' : 'Загрузить аватарку');
+    up.onclick = () => file.click();
+    file.onchange = async () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      try {
+        avMsg.textContent = 'Загрузка…';
+        const r = await api.uploadAvatar(await avatarFromFile(f));
+        account!.avatar = r.avatar;
+        avMsg.textContent = 'Аватарка сохранена — её видят все игроки';
+        document.querySelectorAll('.nick-av').forEach((e) => e.replaceWith(avatarEl(account!.login, account!.avatar, 'nick-av')));
+      } catch (e) {
+        avMsg.textContent = (e as Error).message;
+      }
+      renderAv();
+    };
+    avBox.append(avatarEl(account!.login, account!.avatar, 'avatar-big'), h('div', { class: 'avatar-btns' }, up, file));
+    if (account!.avatar) {
+      const del = h('button', { class: 'btn small' }, 'Убрать');
+      del.onclick = async () => {
+        await api.deleteAvatar().catch(() => {});
+        account!.avatar = null;
+        avMsg.textContent = 'Аватарка удалена';
+        document.querySelectorAll('.nick-av').forEach((e) => e.replaceWith(avatarEl(account!.login, null, 'nick-av')));
+        renderAv();
+      };
+      avBox.querySelector('.avatar-btns')!.append(del);
+    }
+  };
+  renderAv();
+  acc.append(avBox, avMsg, h('hr'));
   const oldP = h('input', { type: 'password', placeholder: 'Старый пароль', autocomplete: 'current-password' });
   const newP = h('input', { type: 'password', placeholder: 'Новый пароль', autocomplete: 'new-password' });
   const chg = h('button', { class: 'btn' }, 'Сменить пароль');
@@ -772,6 +913,9 @@ function renderSettings(body: HTMLElement) {
     h('p', { class: 'hint' }, 'Модели оружия: Low Poly Weapons Pack, автор Zsky (', link('https://www.patreon.com/Zsky', 'patreon.com/Zsky'), '). Лицензия ', link('https://creativecommons.org/licenses/by/4.0/', 'CC BY 4.0'), '. Изменения: масштаб, ориентация, материалы.'),
     h('p', { class: 'hint' }, 'Звуки выстрелов: The Free Firearm Sound Library, Still North Media (CC0). Изменения: нарезка, сведение в моно.'),
   );
+  // три колонки: графика и аккаунт · управление · прицел и титры (блоки во всю высоту, прокручивается страница)
+  const col = (...ps: HTMLElement[]) => h('div', { class: 'settings-col' }, ...ps);
+  body.append(col(panel, acc), col(keysPanel), col(chPanel, credits));
 }
 
 // ---------- Игра ----------
@@ -803,6 +947,11 @@ function closeModal() {
 
 async function openModePicker() {
   if (!account) return;
+  // в лобби игру запускает лидер, остальные идут за ним сами
+  if (partyState?.party && !partyState.leader) {
+    showNotice('Играть начинает лидер лобби — вы зайдёте вместе с ним');
+    return;
+  }
   // матч уже найден (например, после обновления страницы) — сразу в него
   try {
     const q = await api.queueState();
@@ -819,6 +968,18 @@ async function openModePicker() {
     const b = h('button', { class: 'mode-card' }, h('b', {}, m.title), h('span', {}, m.text));
     b.onclick = async () => {
       if (m.id === 'public') {
+        // лобби — в одну комнату и одну команду: комнату выбирает сервер, остальные зайдут за лидером
+        if (partyState?.party) {
+          try {
+            const r = await api.partyCmd('play');
+            lastGoAt = r.party?.go?.at ?? Date.now();
+            closeModal();
+            return startGame('public', r.room);
+          } catch (e) {
+            err.textContent = e instanceof Error ? e.message : 'Ошибка сети';
+            return;
+          }
+        }
         closeModal();
         return startGame('public');
       }
@@ -858,11 +1019,12 @@ function showQueue(first: QueueState) {
       return;
     }
     if (q.state === 'idle') {
-      info.textContent = 'Поиск прерван';
-      clearInterval(queueTimer);
+      // поиск отменил кто-то из лобби (или сервер забыл нас) — закрываем окно
+      closeModal();
+      showNotice('Поиск отменён');
       return;
     }
-    info.textContent = `В поиске: ${q.count ?? 1} из ${q.need ?? 10} игроков` + (q.full ? ' · все комнаты сервера заняты, ждём свободную' : '');
+    info.textContent = `В поиске: ${q.count ?? 1} из ${q.need ?? 10} игроков` + (q.party && q.party > 1 ? ` · ваше лобби: ${q.party}` : '') + (q.full ? ' · все комнаты сервера заняты, ждём свободную' : '');
   };
   render(first);
   let tick = 0;
@@ -878,7 +1040,194 @@ function showQueue(first: QueueState) {
   };
 }
 
-async function startGame(mode: GameMode = 'public') {
+/** Короткое сообщение поверх меню. */
+function showNotice(text: string) {
+  document.querySelector('.menu-notice')?.remove();
+  const note = h('div', { class: 'menu-notice' }, text);
+  note.onclick = () => note.remove();
+  document.querySelector('.menu')?.append(note);
+  setTimeout(() => note.remove(), 6000);
+}
+
+/** Аватарка: картинка игрока или первая буква ника на цветном круге (цвет — от ника). */
+function avatarEl(login: string, url: string | null | undefined, cls: string): HTMLElement {
+  const a = h('span', { class: 'avatar ' + cls });
+  if (url) {
+    a.style.backgroundImage = `url("${url}")`;
+    a.classList.add('img');
+  } else {
+    a.textContent = login.slice(0, 1).toUpperCase();
+    let hash = 0;
+    for (const ch of login) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    a.style.background = `hsl(${hash % 360} 45% 38%)`;
+  }
+  return a;
+}
+
+/** Картинку из файла — в квадрат 128×128 (обрезка по центру) и в JPEG не больше ~60 КБ. */
+async function avatarFromFile(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) throw new Error('Нужен файл с картинкой');
+  if (file.size > 15 * 1024 * 1024) throw new Error('Файл больше 15 МБ');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((ok, fail) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => fail(new Error('Не удалось открыть картинку'));
+      i.src = url;
+    });
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const g = c.getContext('2d')!;
+    const s = Math.min(img.naturalWidth, img.naturalHeight);
+    g.fillStyle = '#222';
+    g.fillRect(0, 0, 128, 128);
+    g.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, 128, 128);
+    for (const q of [0.88, 0.75, 0.6, 0.45]) {
+      const data = c.toDataURL('image/jpeg', q);
+      if (data.length < 80_000) return data;
+    }
+    throw new Error('Картинка слишком сложная — попробуйте другую');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ---------- Лобби ----------
+
+/**
+ * Лобби в верхней панели: кружки участников (корона у лидера) и «+»; по клику — окно со списком,
+ * приглашением по нику, исключением и выходом. Входящие приглашения — всплывающие окна.
+ * Участники идут за лидером: в паблик — в его комнату, в поиск — вместе с ним.
+ */
+function setupLobby(bar: HTMLElement, menu: HTMLElement) {
+  let open = false;
+  const pop = h('div', { class: 'lobby-pop' });
+  pop.style.display = 'none';
+  menu.append(pop);
+  const toasts = h('div', { class: 'invite-toasts' });
+  menu.append(toasts);
+  let msg = '';
+
+  const cmd = async (c: 'invite' | 'accept' | 'decline' | 'leave' | 'kick', body: object = {}) => {
+    try {
+      partyState = await api.partyCmd(c, body);
+      msg = c === 'invite' ? 'Приглашение отправлено' : '';
+    } catch (e) {
+      msg = e instanceof Error ? e.message : 'Ошибка сети';
+    }
+    render();
+  };
+
+  const avatar = (login: string, leader: boolean, online = true, url?: string | null) => {
+    const a = avatarEl(login, url, 'lobby-ava' + (leader ? ' leader' : '') + (online ? '' : ' offline'));
+    a.title = login;
+    return a;
+  };
+
+  const render = () => {
+    const st = partyState;
+    const party = st?.party;
+    bar.innerHTML = '';
+    if (party) for (const m of party.members) bar.append(avatar(m.login, m.leader, m.online, m.avatar));
+    else bar.append(avatar(account?.login ?? '?', true, true, account?.avatar));
+    const plus = h('button', { class: 'lobby-plus', title: 'Лобби: пригласить друзей' }, '+');
+    bar.append(plus);
+    bar.onclick = () => {
+      open = !open;
+      render();
+    };
+    pop.style.display = open ? 'block' : 'none';
+    if (open) {
+      pop.innerHTML = '';
+      const n = party ? party.members.length : 1;
+      pop.append(h('div', { class: 'panel-title' }, `ЛОББИ · ${n}/5`));
+      const list = h('div', { class: 'lobby-list' });
+      const rows = party ? party.members : [{ login: account?.login ?? '?', avatar: account?.avatar, leader: true, online: true, mm: null, wm: '???' }];
+      for (const m of rows) {
+        const rank = m.mm ? h('span', { class: 'lobby-rank' }, `ур. ${m.mm.level} · ${m.mm.elo}`) : h('span', { class: 'lobby-rank' }, 'ММ ???');
+        if (m.mm) rank.style.color = m.mm.color;
+        const row = h('div', { class: 'lobby-row' }, avatar(m.login, m.leader, m.online, m.avatar), h('b', {}, (m.leader ? '♛ ' : '') + m.login), rank, h('span', { class: 'lobby-rank wm' }, m.wm));
+        if (st?.leader && party && m.login !== account?.login) {
+          const kick = h('button', { class: 'lobby-kick', title: 'Исключить из лобби' }, '×');
+          kick.onclick = (e) => {
+            e.stopPropagation();
+            void cmd('kick', { login: m.login });
+          };
+          row.append(kick);
+        }
+        list.append(row);
+      }
+      pop.append(list);
+      if (!party) pop.append(h('p', { class: 'hint' }, 'Пригласите друзей: вместе — в паблик в одну команду или в рейтинговый поиск одной группой (в союзники — вдвоём).'));
+      if (!party || st?.leader) {
+        const input = h('input', { class: 'lobby-input', placeholder: 'Ник игрока', maxlength: '16' }) as HTMLInputElement;
+        const send = h('button', { class: 'btn small' }, 'Пригласить');
+        const go = () => {
+          if (input.value.trim()) void cmd('invite', { login: input.value.trim() });
+        };
+        send.onclick = go;
+        input.onkeydown = (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') go();
+        };
+        pop.append(h('div', { class: 'lobby-invite' }, input, send));
+      } else pop.append(h('p', { class: 'hint' }, `Лидер — ${party.leader}: он запускает игру и поиск, вы зайдёте вместе с ним.`));
+      if (msg) pop.append(h('div', { class: 'hint lobby-msg' }, msg));
+      if (party) {
+        const leave = h('button', { class: 'btn small danger' }, 'Выйти из лобби');
+        leave.onclick = () => void cmd('leave');
+        pop.append(leave);
+      }
+    }
+    // приглашения
+    const ids = new Set((st?.invites ?? []).map((i) => i.id));
+    toasts.querySelectorAll<HTMLElement>('.invite-toast').forEach((t) => {
+      if (!ids.has(t.dataset.id!)) t.remove();
+    });
+    for (const inv of st?.invites ?? []) {
+      if (shownInvites.has(inv.id) || toasts.querySelector(`[data-id="${inv.id}"]`)) continue;
+      const yes = h('button', { class: 'btn small primary' }, 'Принять');
+      const no = h('button', { class: 'btn small' }, 'Отклонить');
+      const t = h('div', { class: 'invite-toast' }, h('b', {}, inv.from), h('span', {}, 'приглашает вас в лобби'), h('div', { class: 'invite-actions' }, yes, no));
+      t.dataset.id = inv.id;
+      yes.onclick = () => {
+        shownInvites.add(inv.id);
+        t.remove();
+        void cmd('accept', { id: inv.id });
+      };
+      no.onclick = () => {
+        shownInvites.add(inv.id);
+        t.remove();
+        void cmd('decline', { id: inv.id });
+      };
+      toasts.append(t);
+    }
+  };
+  pop.onclick = (e) => e.stopPropagation();
+
+  const poll = async () => {
+    try {
+      partyState = await api.party();
+    } catch {
+      return;
+    }
+    const st = partyState;
+    render();
+    // участник идёт за лидером
+    const go = st.party?.go;
+    if (go && go.at > lastGoAt && !st.leader) {
+      lastGoAt = go.at;
+      return startGame('public', go.room);
+    }
+    if (st.queue.state === 'found' && st.queue.mode) return startGame(st.queue.mode);
+    if (st.queue.state === 'searching' && !document.querySelector('.modal.queue')) showQueue(st.queue);
+  };
+  render();
+  return { poll };
+}
+
+async function startGame(mode: GameMode = 'public', roomId?: string) {
   if (!account) return;
   closeModal();
   stopMenu();
@@ -890,7 +1239,7 @@ async function startGame(mode: GameMode = 'public') {
       account = r.account;
       showMenu();
     }, () => boot());
-  }, 'market', mode);
+  }, 'market', mode, roomId);
   if (import.meta.env.DEV) (window as any).__vts = game;
   game.onSettingsChanged = debounce((s: Settings) => {
     account!.settings = s;

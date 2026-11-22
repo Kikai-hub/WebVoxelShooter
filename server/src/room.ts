@@ -163,6 +163,8 @@ export interface Conn {
   accountId: string;
   login: string;
   loadout: Loadout;
+  /** адрес аватарки аккаунта */
+  avatar?: string;
   slot: number; // -1 — наблюдатель
   pendingSlot: number;
   lastChat: number;
@@ -372,6 +374,8 @@ export class Room {
   readonly maxSpectators: number;
   /** комната закрыта (рейтинговый матч окончен или брошен) — её можно удалять */
   closed = false;
+  /** рейтинговый матч без единого подключения дольше этого (с) — отменяется */
+  abandonAfter = 90;
   /** рейтинговый матч закончился */
   onMatchOver: ((r: MatchResult) => void) | null = null;
   /** когда в комнате последний раз было хоть одно подключение */
@@ -444,7 +448,8 @@ export class Room {
     return !this.closed && (this.players.some((p) => p.isBot && !p.pending) || this.spectators.size < this.maxSpectators);
   }
 
-  join(conn: Conn): void {
+  /** prefTeam — сторона, где уже играют друзья из лобби (если там есть место у бота). */
+  join(conn: Conn, prefTeam?: Team): void {
     // рейтинговый матч: только свои игроки и только на своё место
     if (this.roster) {
       const idx = this.roster.indexOf(conn.accountId);
@@ -501,7 +506,7 @@ export class Room {
       this.sendFull(conn);
       return;
     }
-    const slot = this.findBotSlot();
+    const slot = (prefTeam !== undefined ? this.botSlotOn(prefTeam) : null) ?? this.findBotSlot();
     if (slot) {
       this.assignHuman(slot, conn);
       return;
@@ -1191,7 +1196,7 @@ export class Room {
     const t0 = performance.now();
     if (this.conns.size > 0 || this.tick === 0) this.lastOccupied = this.time;
     // рейтинговый матч, где 90 с никого нет (не зашли или все ушли), — отменяем без изменения рейтинга
-    if (this.roster && this.time - this.lastOccupied > 90) {
+    if (this.roster && this.time - this.lastOccupied > this.abandonAfter) {
       this.close('Матч отменён: игроки не подключились');
       return;
     }
@@ -1904,6 +1909,13 @@ export class Room {
   }
 
   private broadcastState() {
+    // состав людей сменился — разослать аватарки
+    const av = this.avatars();
+    const key = JSON.stringify(av);
+    if (key !== this.avatarKey) {
+      this.avatarKey = key;
+      for (const c of this.conns) c.sendJson({ t: 'av', a: av });
+    }
     const byTeam = [this.publicState(TEAM_T), this.publicState(TEAM_CT)];
     const spec = this.publicState(-2);
     for (const c of this.conns) {
@@ -1930,8 +1942,17 @@ export class Room {
     };
   }
 
+/** Аватарки людей по слотам (у ботов нет). */
+  private avatars(): Record<number, string> {
+    const out: Record<number, string> = {};
+    for (const p of this.players) if (!p.isBot && p.conn?.avatar) out[p.id] = p.conn.avatar;
+    return out;
+  }
+  private avatarKey = '';
+
   private sendFull(conn: Conn) {
     conn.sendJson(this.fullState(conn));
+    conn.sendJson({ t: 'av', a: this.avatars() });
     conn.sendJson(conn.slot >= 0 ? this.publicState(this.players[conn.slot].team) : this.publicState(-2));
   }
 

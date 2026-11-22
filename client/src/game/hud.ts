@@ -13,6 +13,9 @@ import {
   zoneName,
   MAP_LIST,
   mapName,
+  drawCrosshair,
+  DEFAULT_CROSSHAIR,
+  type Crosshair,
   forTeam,
   nadeWeapon,
   overtimeOf,
@@ -131,7 +134,8 @@ export class Hud {
     this.progressBar = el('div', 'progress-bar', el('div', 'progress-track', this.progress));
     this.progress.style.display = 'none';
     this.crosshair = el('div', 'crosshair', this.root);
-    for (const c of ['l', 'r', 't', 'b']) el('div', 'ch ' + c, this.crosshair);
+    this.chCanvas = el('canvas', 'ch-canvas', this.crosshair);
+    this.chCanvas.width = this.chCanvas.height = 160;
     this.hitmarker = el('div', 'hitmarker', this.root);
     this.vignette = el('div', 'vignette', this.root);
     this.dmgArrows = el('div', 'dmg-arrows', this.root);
@@ -229,15 +233,27 @@ export class Hud {
     this.hitmarker.style.opacity = now < this.hitUntil ? '1' : '0';
   }
 
+  /** аватарки людей по слотам (приходят отдельным сообщением при смене состава) */
+  avatars: Record<number, string> = {};
+
+  setAvatars(a: Record<number, string>) {
+    this.avatars = a;
+    this.portraitsT.dataset.key = this.portraitsCT.dataset.key = '';
+  }
+
   private renderPortraits(box: HTMLDivElement, pl: PublicPlayer[]) {
-    const key = pl.map((p) => `${p.i}${p.a ? 1 : 0}`).join(',');
+    const key = pl.map((p) => `${p.i}${p.a ? 1 : 0}${p.b ? '' : this.avatars[p.i] ?? ''}`).join(',');
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.innerHTML = '';
     for (const p of pl) {
       const d = el('div', 'portrait' + (p.a ? '' : ' dead') + (p.b ? ' bot' : ''), box);
       d.title = p.n;
-      d.textContent = p.n.replace(/^BOT /, '').slice(0, 2).toUpperCase();
+      const av = p.b ? undefined : this.avatars[p.i];
+      if (av) {
+        d.classList.add('has-av');
+        d.style.backgroundImage = `url("${av}")`;
+      } else d.textContent = p.n.replace(/^BOT /, '').slice(0, 2).toUpperCase();
     }
   }
 
@@ -283,9 +299,24 @@ export class Hud {
     this.progressBar.style.width = Math.min(100, k * 100) + '%';
   }
 
+  private chCanvas: HTMLCanvasElement;
+  private chCfg: Crosshair = DEFAULT_CROSSHAIR;
+  private chKey = '';
+
+  /** Свой прицел из настроек (видит только сам игрок). */
+  setCrosshairCfg(c: Crosshair) {
+    this.chCfg = c;
+    this.chKey = '';
+  }
+
   setCrosshair(spread: number, visible: boolean) {
     this.crosshair.style.display = visible ? 'block' : 'none';
-    this.crosshair.style.setProperty('--gap', 4 + Math.min(40, spread * 400) + 'px');
+    if (!visible) return;
+    const px = Math.round(Math.min(40, spread * 400));
+    const key = px + '|' + JSON.stringify(this.chCfg);
+    if (key === this.chKey) return;
+    this.chKey = key;
+    drawCrosshair(this.chCanvas.getContext('2d')!, 160, 160, this.chCfg, px);
   }
 
   /** Ослепление вспышкой: белый экран, который тает. */
@@ -456,7 +487,14 @@ export class Hud {
       for (const h of ['Игрок', ...(ranks ? ['Звание'] : []), 'Убийства', 'Смерти', 'Деньги']) el('th', '', hr, h);
       for (const p of st.pl.filter((q) => q.t === team).sort((a, b) => b.k - a.k)) {
         const tr = el('tr', (p.a ? '' : 'dead') + (p.i === myId ? ' me' : ''), tbl);
-        el('td', '', tr, p.n + (p.c ? '' : ' (откл.)') + (p.bomb ? ' 💣' : '') + (p.kit ? ' ✚' : ''));
+        const name = el('td', 'board-name', tr);
+        const av = p.b ? undefined : this.avatars[p.i];
+        if (av) {
+          const img = el('img', 'board-av', name) as HTMLImageElement;
+          img.src = av;
+          img.alt = '';
+        }
+        name.append(p.n + (p.c ? '' : ' (откл.)') + (p.bomb ? ' 💣' : '') + (p.kit ? ' ✚' : ''));
         if (ranks) {
           const td = el('td', 'board-rank', tr, p.b ? '—' : p.rk ?? '???');
           if (p.rc) td.style.color = p.rc;

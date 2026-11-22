@@ -51,10 +51,10 @@ async function main() {
   check(rm.rooms.size === 0, 'на старте нет ни одной комнаты');
 
   // 2. Поиск союзников: трое — матча нет, четвёртый — матч
-  for (let i = 0; i < 3; i++) rm.enqueue(ids[i], 'p' + i, 'wm');
+  for (let i = 0; i < 3; i++) rm.enqueue([{ accountId: ids[i], login: 'p' + i }], 'wm');
   mm();
   check(rm.rooms.size === 0 && rm.queueState(ids[0]).state === 'searching', 'трое в поиске 2×2 — матч не собран');
-  rm.enqueue(ids[3], 'p3', 'wm');
+  rm.enqueue([{ accountId: ids[3], login: 'p3' }], 'wm');
   mm();
   const room = [...rm.rooms.values()][0];
   check(rm.rooms.size === 1 && room?.mode === 'wm' && room.players.length === 4 && room.half === 8, 'четвёртый игрок — создана комната 2×2 (4 места, половина 8 раундов)');
@@ -103,6 +103,7 @@ async function main() {
   const a = rm.route(ids[4], 'public');
   const b = rm.route(ids[5], 'public');
   check(typeof a !== 'string' && a === b && rm.rooms.size === 1, 'паблик создан по первому входу, второй игрок — в тот же');
+  check(typeof a !== 'string' && a.rankOf === null, 'в паблике звания в таблице не показываются');
   if (typeof a !== 'string') {
     a.join(conn(ids[4]));
     a.join(conn(ids[5]));
@@ -113,8 +114,8 @@ async function main() {
   check(rm.rooms.size > MAX_ROOMS, '(служебно наполнили комнаты сверх лимита)');
   for (const [id, r] of rm.rooms) if (rm.rooms.size > MAX_ROOMS && r !== a) rm.rooms.delete(id);
   for (const r of rm.rooms.values()) for (const p of r.players) if (r !== a) p.pending = {} as Conn; // занять все места у ботов
-  for (let i = 0; i < 2; i++) rm.enqueue(ids[i], 'x', 'wm');
-  for (let i = 2; i < 4; i++) rm.enqueue(ids[i], 'x', 'wm');
+  for (let i = 0; i < 2; i++) rm.enqueue([{ accountId: ids[i], login: 'x' }], 'wm');
+  for (let i = 2; i < 4; i++) rm.enqueue([{ accountId: ids[i], login: 'x' }], 'wm');
   mm();
   check(rm.rooms.size === MAX_ROOMS && rm.queueState(ids[0]).full === true, `при ${MAX_ROOMS} комнатах новый матч не создаётся, поиск ждёт`);
 

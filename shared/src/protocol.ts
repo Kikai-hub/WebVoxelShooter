@@ -307,11 +307,13 @@ export type ServerMsg =
   | { t: 'kick'; msg: string; end?: boolean }
   /** итог рейтингового матча для игрока: изменение Elo (или скрытого рейтинга) и звание */
   | { t: 'rating'; mode: GameMode; won: boolean; delta: number; elo: number; rank: string; promo?: string }
-  | { t: 'pong'; c: number };
+  | { t: 'pong'; c: number }
+  /** аватарки людей: слот → адрес картинки */
+  | { t: 'av'; a: Record<number, string> };
 
 export type ClientMsg =
   /** mode: в какой режим войти (рейтинговый — только в уже найденный матч) */
-  | { t: 'auth'; token: string; mode?: GameMode }
+  | { t: 'auth'; token: string; mode?: GameMode; room?: string }
   | { t: 'buy'; item: string }
   | { t: 'chat'; text: string }
   | { t: 'ping'; c: number }

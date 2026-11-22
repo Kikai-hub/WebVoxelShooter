@@ -9,6 +9,7 @@ import { AccountStore, emptyStats, type Account } from './accounts';
 import { mmLevel, wmRankLabel } from '../../shared/src/index';
 import { preloadMaps, type Conn, type Room } from './room';
 import { RoomManager, type RankedMode } from './rooms';
+import { PARTY_MAX, PartyStore } from './party';
 import { execFileSync } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 
@@ -66,6 +67,29 @@ const accounts = new AccountStore(DATA_DIR);
 preloadMaps();
 // комнаты создаются по требованию: паблик — при входе первого игрока, рейтинговые — когда поиск собрал матч
 const rooms = new RoomManager(accounts, BOT_LEVEL, Math.max(0, Math.min(100, Number(process.env.MAX_SPECTATORS ?? 20))));
+// лобби: онлайн — кто в меню (спрашивает лобби) или сейчас в любой комнате
+/** когда аккаунт последний раз загружал аватарку (не чаще раза в 5 с) */
+const avatarUploads = new Map<string, number>();
+const parties = new PartyStore((id) => [...rooms.rooms.values()].some((r) => [...r.conns].some((c) => c.accountId === id)));
+
+/** Состояние лобби для меню: участники с рейтингами, входящие приглашения, запуск паблика лидером. */
+function partyView(acc: Account) {
+  parties.touch(acc.id);
+  const p = parties.of(acc.id);
+  const member = (id: string) => {
+    const a = accounts.get(id);
+    if (!a) return null;
+    const r = accounts.ratings(a);
+    const lv = mmLevel(r.mm.elo);
+    return { login: a.login, avatar: accounts.avatarUrl(a), leader: p ? p.leader === id : true, online: parties.online(id), mm: r.mm.matches > 0 ? { elo: r.mm.elo, level: lv.level, color: lv.color } : null, wm: wmRankLabel(r.wm) };
+  };
+  return {
+    party: p && p.members.length > 1 ? { leader: accounts.get(p.leader)?.login ?? '', members: p.members.map(member).filter(Boolean), go: p.go ?? null } : null,
+    leader: parties.isLeader(acc.id),
+    invites: parties.invitesFor(acc.id).map((i) => ({ id: i.id, from: accounts.get(i.from)?.login ?? '?' })),
+    queue: rooms.queueState(acc.id),
+  };
+}
 
 // ---------- Игровой цикл 64 Гц с поправкой на дрейф ----------
 let nextTick = performance.now();
@@ -100,13 +124,13 @@ function json(res: ServerResponse, code: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-async function readBody(req: IncomingMessage): Promise<any> {
+async function readBody(req: IncomingMessage, limit = 16 * 1024): Promise<any> {
   return new Promise((ok, fail) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => {
       size += c.length;
-      if (size > 16 * 1024) {
+      if (size > limit) {
         fail(new Error('too large'));
         req.destroy();
         return;
@@ -137,6 +161,7 @@ function publicAccount(a: Account) {
     loadout: a.loadout,
     settings: a.settings,
     created: a.created,
+    avatar: accounts.avatarUrl(a),
     ratings: {
       mm: { elo: r.mm.elo, level: lv.level, color: lv.color, matches: r.mm.matches, wins: r.mm.wins },
       // скрытый рейтинг союзников не показываем — только звание
@@ -200,7 +225,15 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && path === '/api/status') return json(res, 200, { ...rooms.status(), accounts: accounts.count });
     if (req.method === 'GET' && path === '/api/news') return json(res, 200, { version: VERSION, news: NEWS });
     if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE') return json(res, 405, { error: 'method' });
-    const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req);
+    // аватарка: картинка без входа (её видят все), долгий кэш — у каждой новой загрузки свой адрес
+    const av = /^\/api\/avatar\/([a-f0-9]{24})\.jpg$/.exec(path);
+    if (av && req.method === 'GET') {
+      const file = accounts.avatarFile(av[1]);
+      if (!file) return json(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'" });
+      return res.end(readFileSync(file));
+    }
+    const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readBody(req, path === '/api/avatar' ? 160 * 1024 : 16 * 1024);
 
     if (path === '/api/register' && req.method === 'POST') {
       const r = await accounts.register(String(body.login ?? ''), String(body.password ?? ''), ip);
@@ -251,13 +284,71 @@ const server = createServer(async (req, res) => {
         const mode = body.mode;
         if (mode !== 'mm' && mode !== 'wm') return json(res, 400, { error: 'Неизвестный режим' });
         if (rooms.draining) return json(res, 503, { error: 'Сервер обновляется, поиск откроется через минуту' });
-        return json(res, 200, rooms.enqueue(acc.id, acc.login, mode as RankedMode));
+        // в лобби поиск запускает лидер — за всех; в союзники — не больше двоих
+        if (!parties.isLeader(acc.id)) return json(res, 403, { error: 'Поиск запускает лидер лобби' });
+        const ids = parties.members(acc.id);
+        const size = mode === 'wm' ? 2 : PARTY_MAX;
+        if (ids.length > size) return json(res, 400, { error: `В «${mode === 'wm' ? 'Союзники' : 'Матчмейкинг'}» лобби — не больше ${size} игроков` });
+        const lead = [acc.id, ...ids.filter((id) => id !== acc.id)];
+        return json(res, 200, rooms.enqueue(lead.map((id) => ({ accountId: id, login: accounts.get(id)?.login ?? '?' })), mode as RankedMode));
       }
       if (req.method === 'DELETE') {
         rooms.dequeue(acc.id);
         return json(res, 200, { state: 'idle' });
       }
       return json(res, 200, rooms.queueState(acc.id));
+    }
+    // ---- Аватарка: JPEG до 64 КБ (браузер сам ужимает до 128×128) ----
+    if (path === '/api/avatar') {
+      if (req.method === 'DELETE') {
+        accounts.clearAvatar(acc);
+        return json(res, 200, { avatar: null });
+      }
+      if (req.method !== 'POST') return json(res, 405, { error: 'method' });
+      const now = Date.now();
+      const last = avatarUploads.get(acc.id) ?? 0;
+      if (now - last < 5000) return json(res, 429, { error: 'Слишком часто — подождите пару секунд' });
+      const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(body.data ?? ''));
+      const buf = m ? Buffer.from(m[1], 'base64') : null;
+      // настоящий JPEG: начинается с FF D8 FF, кончается FF D9
+      const isJpeg = !!buf && buf.length > 100 && buf.length <= 64 * 1024 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff && buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9;
+      if (!buf || !isJpeg) return json(res, 400, { error: 'Нужна картинка JPEG до 64 КБ' });
+      avatarUploads.set(acc.id, now);
+      accounts.setAvatar(acc, buf);
+      return json(res, 200, { avatar: accounts.avatarUrl(acc) });
+    }
+    // ---- Лобби ----
+    if (path === '/api/party' && req.method === 'GET') return json(res, 200, partyView(acc));
+    if (path.startsWith('/api/party/') && req.method === 'POST') {
+      const cmd = path.slice('/api/party/'.length);
+      let err: string | null = null;
+      if (cmd === 'invite') {
+        const to = accounts.findByLogin(String(body.login ?? ''));
+        err = !to ? 'Игрок с таким ником не найден' : parties.invite(acc.id, to.id);
+      } else if (cmd === 'accept') {
+        rooms.dequeue(acc.id);
+        err = parties.accept(acc.id, String(body.id ?? ''));
+      } else if (cmd === 'decline') parties.decline(acc.id, String(body.id ?? ''));
+      else if (cmd === 'leave') {
+        rooms.dequeue(acc.id);
+        parties.leave(acc.id);
+      } else if (cmd === 'kick') {
+        const t = accounts.findByLogin(String(body.login ?? ''));
+        err = t ? parties.kick(acc.id, t.id) : 'Игрок не найден';
+        if (!err && t) rooms.dequeue(t.id);
+      } else if (cmd === 'play') {
+        // лидер запускает паблик: комната, где хватит мест на всё лобби
+        if (!parties.isLeader(acc.id)) err = 'Играть начинает лидер лобби';
+        else {
+          const r = rooms.publicFor(parties.members(acc.id).length);
+          if (typeof r === 'string') err = r;
+          else {
+            parties.go(acc.id, r.id);
+            return json(res, 200, { room: r.id, ...partyView(acc) });
+          }
+        }
+      } else return json(res, 404, { error: 'not found' });
+      return err ? json(res, 400, { error: err, ...partyView(acc) }) : json(res, 200, partyView(acc));
     }
     if (path === '/api/logout' && req.method === 'POST') {
       accounts.logout(token);
@@ -353,6 +444,7 @@ function onSocket(ws: WebSocket, ip: string) {
         accountId: acc.id,
         login: acc.login,
         loadout: acc.loadout,
+        avatar: accounts.avatarUrl(acc) ?? undefined,
         slot: -1,
         pendingSlot: -1,
         lastChat: -10,
@@ -372,7 +464,7 @@ function onSocket(ws: WebSocket, ip: string) {
         },
       };
       const mode = msg.mode === 'mm' || msg.mode === 'wm' ? msg.mode : 'public';
-      const target = rooms.route(acc.id, mode);
+      const target = rooms.route(acc.id, mode, typeof msg.room === 'string' ? msg.room.slice(0, 40) : undefined);
       if (typeof target === 'string') {
         conn.sendJson({ t: 'kick', msg: target, end: true });
         conn.close('no room');
@@ -380,7 +472,10 @@ function onSocket(ws: WebSocket, ip: string) {
         return;
       }
       room = target;
-      room.join(conn);
+      // к друзьям из лобби — в их команду
+      const mates = parties.members(acc.id).filter((id) => id !== acc.id);
+      const mate = target.players.find((p) => !p.isBot && p.accountId && mates.includes(p.accountId));
+      room.join(conn, mate ? mate.team : undefined);
       return;
     }
     if (!room) return;

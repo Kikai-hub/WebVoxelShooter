@@ -9,6 +9,9 @@ import { KNIFE_OF_TEAM, makeKnife } from './knifeModels';
 /** где правая перчатка держит рукоять (система root) и масштаб моделей от первого лица */
 const VM_GRIP = new THREE.Vector3(0.0, -0.025, -0.01);
 const VM_SCALE = 0.85;
+/** где кисть держит нож (система рук): у защиты штык-нож, у нападения керамбит */
+const VM_KNIFE_CT = new THREE.Vector3(0.0, 0.0, -0.06);
+const VM_KNIFE_T = new THREE.Vector3(0.0, 0.0, -0.06);
 /** длина левого рукава (коробка вдоль Z) */
 const SLEEVE_L_LEN = 0.38;
 
@@ -78,8 +81,8 @@ function box(w: number, h: number, d: number, color: number, x: number, y: numbe
 
 /** Оружие: модель из пака, если загружена, иначе блочное. Начало — точка хвата, дуло вдоль −Z. */
 /** team — сторона: от неё зависит нож (0 — керамбит, 1 — штык-нож). */
-export function buildGun(def: WeaponDef, tint: number, team = 1): THREE.Group {
-  if (def.kind === 'knife') return makeKnife(KNIFE_OF_TEAM[team === 0 ? 0 : 1], tint);
+export function buildGun(def: WeaponDef, tint: number, team = 1, inHand = false): THREE.Group {
+  if (def.kind === 'knife') return makeKnife(KNIFE_OF_TEAM[team === 0 ? 0 : 1], tint, inHand);
   const model = cloneGun(def.key, tint);
   if (model) return model;
   const g = new THREE.Group();
@@ -270,7 +273,9 @@ export class ViewModel {
     const ck = def?.kind === 'knife' ? 1000 + this.team : id;
     let g = this.guns.get(ck);
     if (!g) {
-      g = buildGun(def ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff, this.team);
+      g = buildGun(def ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff, this.team, true);
+      // нож — в правой перчатке; кисть поднята в кадр (керамбит в обратном хвате — выше: клинок вниз)
+      if (def?.kind === 'knife') g.position.copy(this.team === 0 ? VM_KNIFE_T : VM_KNIFE_CT);
       if (model) {
         // модель: точка хвата — в правой перчатке
         g.scale.setScalar(VM_SCALE);
@@ -295,8 +300,15 @@ export class ViewModel {
     } else {
       const len = def?.kind === 'sniper' ? 0.65 : def?.kind === 'shotgun' ? 0.5 : def?.kind === 'rifle' ? 0.55 : def?.kind === 'smg' ? 0.38 : def?.kind === 'knife' ? 0.25 : 0.18;
       this.flash.position.set(0, 0.02, -len);
-      this.glove.position.set(0.04, -0.06, 0.05);
-      this.sleeve.position.set(0.04, -0.07, 0.24);
+      if (def?.kind === 'knife') {
+        // перчатка на рукояти ножа, рукав — назад и вниз к краю экрана
+        const k = this.team === 0 ? VM_KNIFE_T : VM_KNIFE_CT;
+        this.glove.position.set(k.x, k.y, k.z);
+        this.sleeve.position.set(k.x + 0.01, k.y - 0.04, k.z + 0.19);
+      } else {
+        this.glove.position.set(0.04, -0.06, 0.05);
+        this.sleeve.position.set(0.04, -0.07, 0.24);
+      }
       this.gloveL.position.set(-0.04, -0.03, -0.22);
       this.sleeveL.position.set(-0.12, -0.04, -0.06);
     }

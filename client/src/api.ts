@@ -1,5 +1,5 @@
 // HTTP API аккаунтов. Токен хранится в хранилище страницы (localStorage).
-import type { Binds } from '../../shared/src/index';
+import type { Binds, Crosshair } from '../../shared/src/index';
 
 export interface Loadout {
   primary: [string, string];
@@ -15,6 +15,7 @@ export interface Settings {
   blood: 'blood' | 'confetti';
   volume: number;
   binds: Binds;
+  crosshair: Crosshair;
 }
 /** Статистика игрока за всё время (как на сервере, server/src/accounts.ts). */
 export interface PlayerStats {
@@ -34,6 +35,8 @@ export interface PlayerStats {
 }
 export interface AccountInfo {
   login: string;
+  /** адрес аватарки или null */
+  avatar?: string | null;
   loadout: Loadout;
   settings: Settings;
   created: number;
@@ -47,6 +50,7 @@ export type RankedMode = 'mm' | 'wm';
 export interface TopRow {
   place: number;
   login: string;
+  avatar?: string | null;
   elo?: number;
   rank?: number | null;
   matches: number;
@@ -59,7 +63,26 @@ export interface QueueState {
   count?: number;
   need?: number;
   full?: boolean;
+  party?: number;
 }
+/** Лобби: участники (с рейтингами), входящие приглашения, состояние поиска группы. */
+export interface PartyMember {
+  login: string;
+  avatar?: string | null;
+  leader: boolean;
+  online: boolean;
+  mm: { elo: number; level: number; color: string } | null;
+  wm: string;
+}
+export interface PartyState {
+  party: { leader: string; members: PartyMember[]; go: { room: string; at: number } | null } | null;
+  /** я лидер (или один) */
+  leader: boolean;
+  invites: Array<{ id: string; from: string }>;
+  queue: QueueState;
+  room?: string;
+}
+
 export interface ServerStatus {
   rooms: number;
   maxRooms: number;
@@ -125,6 +148,10 @@ export const api = {
   news: () =>call<{ version: { commit: string; date: string }; news: Array<{ date: string; title: string; items: string[] }> }>('GET', 'news'),
   status: () => call<ServerStatus>('GET', 'status'),
   top: (mode: RankedMode) => call<{ mode: RankedMode; list: TopRow[]; me: TopRow | null; total: number }>('GET', 'top?mode=' + mode),
+  party: () => call<PartyState>('GET', 'party'),
+  uploadAvatar: (data: string) => call<{ avatar: string | null }>('POST', 'avatar', { data }),
+  deleteAvatar: () => call<{ avatar: string | null }>('DELETE', 'avatar'),
+  partyCmd: (cmd: 'invite' | 'accept' | 'decline' | 'leave' | 'kick' | 'play', body: object = {}) => call<PartyState>('POST', 'party/' + cmd, body),
   queueJoin: (mode: RankedMode) => call<QueueState>('POST', 'queue', { mode }),
   queueState: () => call<QueueState>('GET', 'queue'),
   queueLeave: () => call<QueueState>('DELETE', 'queue'),

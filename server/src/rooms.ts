@@ -37,9 +37,11 @@ const WM_MAPS = WM_MAP_LIST.map((m) => m.id);
 /** не спрашивал очередь дольше — выкидываем (закрыл вкладку) */
 const QUEUE_STALE_MS = 15000;
 
-interface QEntry {
-  accountId: string;
-  login: string;
+/** Группа в очереди: один игрок или всё лобби. Лобби в матче всегда в одной команде. */
+interface QGroup {
+  id: string;
+  members: Array<{ accountId: string; login: string; rating: number }>;
+  /** средний рейтинг группы */
   rating: number;
   since: number;
   lastPoll: number;
@@ -55,11 +57,15 @@ export interface QueueState {
   need?: number;
   /** все комнаты заняты — матч начнётся, когда освободится */
   full?: boolean;
+  /** сколько человек в своей группе (лобби) */
+  party?: number;
 }
 
 export class RoomManager {
   rooms = new Map<string, Room>();
-  private queues: Record<RankedMode, Map<string, QEntry>> = { mm: new Map(), wm: new Map() };
+  private queues: Record<RankedMode, Map<string, QGroup>> = { mm: new Map(), wm: new Map() };
+  /** аккаунт → id его группы в очереди */
+  private inQueue = new Map<string, string>();
   /** аккаунт → id комнаты его текущего рейтингового матча */
   private active = new Map<string, string>();
   private nextId = 1;
@@ -94,7 +100,10 @@ export class RoomManager {
     });
     room.onStat = (acc, d) => this.accounts.addStats(acc, d);
     room.onMatchOver = (r) => this.applyResult(r);
-    room.rankOf = (acc) => this.rankLabel(acc, wm ? 'wm' : 'mm');
+    // звания в таблице после матча — только в рейтинговых режимах (в паблике их нет)
+    // для тестов срок отмены брошенного рейтингового матча можно сократить (RANKED_ABANDON, с)
+    if (roster) room.abandonAfter = Math.max(1, Number(process.env.RANKED_ABANDON ?? 90));
+    if (roster) room.rankOf = (acc) => this.rankLabel(acc, wm ? 'wm' : 'mm');
     this.rooms.set(id, room);
     console.log(`комната ${id} создана (${map}), всего ${this.rooms.size}`);
     return room;
@@ -103,13 +112,16 @@ export class RoomManager {
   // ---------- Вход в комнату по WebSocket ----------
 
   /** Куда отправить подключение: свой рейтинговый матч, своё место в паблике или паблик со свободным местом. */
-  route(accountId: string, mode: GameMode): Room | string {
+  route(accountId: string, mode: GameMode, roomId?: string): Room | string {
     if (mode !== 'public') {
       const id = this.active.get(accountId);
       const room = id ? this.rooms.get(id) : undefined;
       return room && !room.closed ? room : 'Матч не найден — начните поиск заново';
     }
     const publics = [...this.rooms.values()].filter((r) => r.mode === 'public' && !r.closed);
+    // комната, которую лидер лобби выбрал для всех
+    const chosen = roomId ? this.rooms.get(roomId) : undefined;
+    if (chosen && chosen.mode === 'public' && !chosen.closed) return chosen;
     // вернуться на своё место (переподключение)
     const own = publics.find((r) => r.players.some((p) => !p.isBot && (p.accountId === accountId || p.pending?.accountId === accountId)));
     if (own) return own;
@@ -121,6 +133,16 @@ export class RoomManager {
     // мест у ботов нет и комнату не создать — наблюдателем, где есть место
     const watch = publics.find((r) => r.hasRoom());
     return watch ?? `Сервер заполнен: ${MAX_ROOMS} комнат заняты, попробуйте позже`;
+  }
+
+  /** Паблик для лобби из size человек: где у ботов хватает мест на всех, иначе — новая комната. */
+  publicFor(size: number): Room | string {
+    const publics = [...this.rooms.values()].filter((r) => r.mode === 'public' && !r.closed);
+    const fits = publics.filter((r) => r.players.filter((p) => p.isBot && !p.pending).length >= size).sort((a, b) => b.people - a.people);
+    if (fits.length) return fits[0];
+    if (this.draining) return 'Сервер обновляется, зайдите через минуту';
+    if (!this.full) return this.create('public');
+    return `Нет комнаты на ${size} игроков: все ${MAX_ROOMS} комнат заняты`;
   }
 
   /** Подпись звания для таблицы игроков: уровень и Elo матчмейкинга или звание союзников. */
@@ -143,74 +165,158 @@ export class RoomManager {
     return mode === 'mm' ? r.mm.elo : r.wm.mmr;
   }
 
-  enqueue(accountId: string, login: string, mode: RankedMode): QueueState {
-    if (this.active.has(accountId)) return this.queueState(accountId);
-    this.dequeue(accountId);
+  /** Встать в очередь: members — сам игрок или всё лобби (первым — лидер). */
+  enqueue(members: Array<{ accountId: string; login: string }>, mode: RankedMode): QueueState {
+    const lead = members[0].accountId;
+    if (members.some((m) => this.active.has(m.accountId))) return this.queueState(lead);
+    for (const m of members) this.dequeue(m.accountId);
     const now = Date.now();
-    this.queues[mode].set(accountId, { accountId, login, rating: this.rating(accountId, mode), since: now, lastPoll: now });
-    return this.queueState(accountId);
+    const list = members.map((m) => ({ ...m, rating: this.rating(m.accountId, mode) }));
+    const g: QGroup = { id: lead, members: list, rating: list.reduce((a, m) => a + m.rating, 0) / list.length, since: now, lastPoll: now };
+    this.queues[mode].set(g.id, g);
+    for (const m of members) this.inQueue.set(m.accountId, g.id);
+    return this.queueState(lead);
   }
 
+  /** Выйти из очереди — вместе со всей своей группой. */
   dequeue(accountId: string) {
-    this.queues.mm.delete(accountId);
-    this.queues.wm.delete(accountId);
+    const gid = this.inQueue.get(accountId);
+    if (!gid) return;
+    for (const q of Object.values(this.queues)) {
+      const g = q.get(gid);
+      if (!g) continue;
+      q.delete(gid);
+      for (const m of g.members) this.inQueue.delete(m.accountId);
+    }
+  }
+
+  private queuedPlayers(mode: RankedMode): number {
+    let n = 0;
+    for (const g of this.queues[mode].values()) n += g.members.length;
+    return n;
   }
 
   queueState(accountId: string): QueueState {
     const roomId = this.active.get(accountId);
     const room = roomId ? this.rooms.get(roomId) : undefined;
     if (room && !room.closed) return { state: 'found', mode: room.mode as RankedMode };
+    const gid = this.inQueue.get(accountId);
     for (const mode of ['mm', 'wm'] as RankedMode[]) {
-      const e = this.queues[mode].get(accountId);
-      if (!e) continue;
-      e.lastPoll = Date.now();
-      return { state: 'searching', mode, wait: Math.floor((Date.now() - e.since) / 1000), count: this.queues[mode].size, need: GAME_MODES[mode].teamSize * 2, full: this.full };
+      const g = gid ? this.queues[mode].get(gid) : undefined;
+      if (!g) continue;
+      g.lastPoll = Date.now();
+      return { state: 'searching', mode, wait: Math.floor((Date.now() - g.since) / 1000), count: this.queuedPlayers(mode), need: GAME_MODES[mode].teamSize * 2, full: this.full, party: g.members.length };
     }
     return { state: 'idle' };
+  }
+
+  /**
+   * Разделить группы на две команды ровно по size игроков (лобби не разрывается),
+   * с самыми близкими средними рейтингами. allowShort — разрешить неполные команды (добор ботами).
+   */
+  private split(groups: QGroup[], size: number, allowShort = false): [QGroup[], QGroup[]] | null {
+    let best: [QGroup[], QGroup[]] | null = null;
+    let bestDiff = Infinity;
+    const a: QGroup[] = [],
+      b: QGroup[] = [];
+    const count = (t: QGroup[]) => t.reduce((n, g) => n + g.members.length, 0);
+    const avg = (t: QGroup[]) => {
+      let sum = 0,
+        n = 0;
+      for (const g of t)
+        for (const m of g.members) {
+          sum += m.rating;
+          n++;
+        }
+      return n ? sum / n : 0;
+    };
+    const dfs = (i: number) => {
+      if (i === groups.length) {
+        const ca = count(a),
+          cb = count(b);
+        if (allowShort ? ca > size || cb > size : ca !== size || cb !== size) return;
+        const d = Math.abs(avg(a) - avg(b));
+        if (d < bestDiff) {
+          bestDiff = d;
+          best = [a.slice(), b.slice()];
+        }
+        return;
+      }
+      for (const t of [a, b]) {
+        if (count(t) + groups[i].members.length <= size) {
+          t.push(groups[i]);
+          dfs(i + 1);
+          t.pop();
+        }
+        if (i === 0) break; // первая группа — всегда в A (симметрия)
+      }
+    };
+    dfs(0);
+    return best;
   }
 
   private matchmake() {
     const now = Date.now();
     for (const mode of ['mm', 'wm'] as RankedMode[]) {
       const q = this.queues[mode];
-      for (const [id, e] of q) if (now - e.lastPoll > QUEUE_STALE_MS) q.delete(id);
-      const need = GAME_MODES[mode].teamSize * 2;
+      for (const [id, g] of q)
+        if (now - g.lastPoll > QUEUE_STALE_MS) {
+          q.delete(id);
+          for (const m of g.members) this.inQueue.delete(m.accountId);
+        }
+      const size = GAME_MODES[mode].teamSize;
+      const need = size * 2;
       while (!this.full && !this.draining) {
-        const list = [...q.values()].sort((a, b) => a.rating - b.rating);
-        let group: QEntry[] | null = null;
-        for (let i = 0; i + need <= list.length; i++) {
-          const win = list.slice(i, i + need);
-          // допуск — по тому, кто в группе ждёт меньше всех
-          const wait = Math.min(...win.map((e) => (now - e.since) / 1000));
-          const allowed = Math.min(1000, 150 + 25 * wait);
-          if (win[need - 1].rating - win[0].rating <= allowed) {
-            group = win;
-            break;
+        const list = [...q.values()].sort((x, y) => x.rating - y.rating);
+        let teams: [QGroup[], QGroup[]] | null = null;
+        // окно по рейтингу: группы подряд (не влезающие пропускаем), пока не наберётся ровно need игроков
+        for (let i = 0; i < list.length && !teams; i++) {
+          const pick: QGroup[] = [];
+          let n = 0;
+          for (let j = i; j < list.length && n < need; j++) {
+            if (n + list[j].members.length > need) continue;
+            pick.push(list[j]);
+            n += list[j].members.length;
           }
+          if (n !== need) continue;
+          // допуск по разбросу — по тому, кто из выбранных ждёт меньше всех
+          const wait = Math.min(...pick.map((g) => (now - g.since) / 1000));
+          const allowed = Math.min(1000, 150 + 25 * wait);
+          const all = pick.flatMap((g) => g.members.map((m) => m.rating));
+          if (Math.max(...all) - Math.min(...all) > allowed) continue;
+          teams = this.split(pick, size);
         }
         // отладка: дополнить ботами, если ждут слишком долго
-        if (!group && this.botFillAfter > 0 && list.length && list.some((e) => (now - e.since) / 1000 >= this.botFillAfter)) group = list.slice(0, need);
-        if (!group) break;
-        for (const e of group) q.delete(e.accountId);
-        this.startMatch(mode, group);
+        if (!teams && this.botFillAfter > 0 && list.some((g) => (now - g.since) / 1000 >= this.botFillAfter)) {
+          const pick: QGroup[] = [];
+          let n = 0;
+          for (const g of list)
+            if (n + g.members.length <= need) {
+              pick.push(g);
+              n += g.members.length;
+            }
+          teams = this.split(pick, size, true);
+        }
+        if (!teams) break;
+        for (const g of [...teams[0], ...teams[1]]) {
+          q.delete(g.id);
+          for (const m of g.members) this.inQueue.delete(m.accountId);
+        }
+        this.startMatch(mode, teams);
       }
     }
   }
 
-  private startMatch(mode: RankedMode, group: QEntry[]) {
+  private startMatch(mode: RankedMode, teams: [QGroup[], QGroup[]]) {
     const size = GAME_MODES[mode].teamSize;
-    // змейка по рейтингу: 1-й → A, 2-й и 3-й → B, 4-й и 5-й → A…
-    const sorted = group.slice().sort((a, b) => b.rating - a.rating);
-    const a: QEntry[] = [],
-      b: QEntry[] = [];
-    sorted.forEach((e, i) => (i % 4 === 0 || i % 4 === 3 ? a : b).push(e));
-    const [t, ct] = Math.random() < 0.5 ? [a, b] : [b, a];
+    const [t, ct] = Math.random() < 0.5 ? teams : [teams[1], teams[0]];
+    const flat = (gs: QGroup[]) => gs.flatMap((g) => g.members);
     const roster: string[] = [];
-    for (let i = 0; i < size; i++) roster.push(t[i]?.accountId ?? '');
-    for (let i = 0; i < size; i++) roster.push(ct[i]?.accountId ?? '');
+    for (const side of [flat(t), flat(ct)]) for (let i = 0; i < size; i++) roster.push(side[i]?.accountId ?? '');
     const room = this.create(mode, roster);
-    for (const e of group) this.active.set(e.accountId, room.id);
-    console.log(`матч ${room.id}: ${group.map((e) => `${e.login}(${e.rating})`).join(', ')}`);
+    const all = [...flat(t), ...flat(ct)];
+    for (const m of all) this.active.set(m.accountId, room.id);
+    console.log(`матч ${room.id}: ${all.map((m) => `${m.login}(${m.rating})`).join(', ')}`);
   }
 
   // ---------- Итог рейтингового матча ----------
@@ -305,7 +411,7 @@ export class RoomManager {
       rooms: rooms.length,
       maxRooms: MAX_ROOMS,
       online: rooms.reduce((n, r) => n + r.conns.size, 0),
-      queue: { mm: this.queues.mm.size, wm: this.queues.wm.size },
+      queue: { mm: this.queuedPlayers('mm'), wm: this.queuedPlayers('wm') },
       list: rooms.map((r) => r.status()),
     };
   }

@@ -118,10 +118,30 @@ function karambit(tint: THREE.Color): THREE.Group {
   return g;
 }
 
-/** Модель ножа; tint — раскраска (умножает цвет стали). */
-export function makeKnife(kind: KnifeKind, tint = 0xffffff): THREE.Group {
+/**
+ * Модель ножа; tint — раскраска (умножает цвет стали).
+ * inHand — как держат в руке: кисть на середине рукояти, клинок вверх с наклоном вперёд
+ * (без него — лёжа, клинком вперёд, как картинка в инвентаре).
+ */
+export function makeKnife(kind: KnifeKind, tint = 0xffffff, inHand = false): THREE.Group {
   const t = new THREE.Color(tint).lerp(new THREE.Color(0xffffff), 0.45);
-  return kind === 'karambit' ? karambit(t) : bayonet(t);
+  const model = kind === 'karambit' ? karambit(t) : bayonet(t);
+  if (!inHand) return model;
+  // штык-нож — клинок вверх с наклоном вперёд, керамбит — клинок вперёд-вверх, изгибом вниз
+  const hold = new THREE.Group();
+  const center = kind === 'karambit' ? 0.045 : 0.06; // середина рукояти от гарды
+  model.position.z = -center;
+  const tilt = new THREE.Group();
+  tilt.add(model);
+  if (kind === 'karambit') {
+    // клинок вперёд и вверх, кончик загибается серпом вниз; кольцо — у запястья
+    tilt.rotation.x = 0.75;
+  } else {
+    // клинок вверх с наклоном вперёд, лезвие — вперёд
+    tilt.rotation.x = 1.15;
+  }
+  hold.add(tilt);
+  return hold;
 }
 
 /** Освободить геометрию и материалы ножа. */

@@ -1199,6 +1199,8 @@ export class Game {
     if (this.bound(code, 'pistol')) this.selectSlot(SLOT_PISTOL);
     if (this.bound(code, 'knife')) this.selectSlot(SLOT_KNIFE);
     if (this.bound(code, 'lastWeapon')) this.selectSlot(this.lastSlot);
+    // осмотр оружия — только своего, живым (прерывается выстрелом, перезарядкой, сменой оружия)
+    if (this.bound(code, 'inspect') && this.predAlive && !e.repeat) this.vm.inspect();
     if (this.bound(code, 'grenade')) this.cycleGrenade();
     // пробел и прочие клавиши не должны прокручивать страницу
     if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();

@@ -7,7 +7,9 @@ import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type
 import { mmLevel, WM_RANKS, type GameMode } from '../../shared/src/index';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
-import { loadGunModels } from './game/weaponModels';
+import { agentRender, weaponRender } from './ui/itemRenders';
+import { KNIFE_NAMES, KNIFE_OF_TEAM } from './game/knifeModels';
+import { loadGunModels, onGunModel } from './game/weaponModels';
 
 // модели оружия грузятся в фоне, пока игрок в меню
 loadGunModels();
@@ -393,66 +395,123 @@ function renderStats(body: HTMLElement) {
     });
 }
 
+/** Тип предмета (подпись) и «редкость» — цвет полосы на ячейке, как в инвентаре CS2. */
+const KIND_LABEL: Record<string, string> = { knife: 'Нож', pistol: 'Пистолет', smg: 'Пистолет-пулемёт', shotgun: 'Дробовик', rifle: 'Штурмовая винтовка', sniper: 'Снайперская винтовка', grenade: 'Граната' };
+const KIND_RARITY: Record<string, string> = { grenade: 'common', pistol: 'mil', smg: 'restricted', shotgun: 'restricted', rifle: 'classified', sniper: 'covert', knife: 'gold' };
+
 function renderInventory(body: HTMLElement, center: HTMLElement, canvas: HTMLCanvasElement) {
   const lo = account!.loadout;
   const filters: Array<[string, string]> = [
     ['all', 'Все'],
-    ['pistol', 'Пистолеты'],
     ['primary', 'Основное'],
+    ['pistol', 'Пистолеты'],
     ['knife', 'Нож'],
     ['grenade', 'Гранаты'],
     ['agents', 'Агенты'],
   ];
   let filter = 'all';
-  const left = h('div', { class: 'panel inv' });
-  const detail = h('div', { class: 'panel detail' });
-  body.append(left, center, detail);
+  let selected = 'w:' + lo.primary[0];
+  // посередине — все ячейки с моделями предметов, справа — выбранный предмет в руках агента
+  const main = h('div', { class: 'inv-main' });
+  const detail = h('div', { class: 'panel inv-detail' });
+  const info = h('div', { class: 'inv-info' });
+  center.classList.add('inv-preview');
+  detail.append(center, info);
+  body.append(h('div', { class: 'inv-layout' }, main, detail));
   agentView = new AgentView(canvas);
-  agentView.setAgent(0, lo.agent[0], lo.skin);
-  (center.querySelector('.hint') ?? center.appendChild(h('div', { class: 'hint center-hint' }, 'Модель можно вращать мышью'))).textContent = 'Модель можно вращать мышью';
+  agentView.setAgent(0, lo.agent[0], lo.skin, lo.primary[0]);
+
+  // картинки: стволы из пака рисуются, когда загрузится модель; пока — заглушка
+  const pending = new Map<HTMLElement, () => string | null>();
+  const fill = () => {
+    for (const [box, make] of pending) {
+      if (!box.isConnected) {
+        pending.delete(box);
+        continue;
+      }
+      const url = make();
+      if (!url) continue;
+      box.innerHTML = '';
+      box.append(Object.assign(h('img'), { src: url, alt: '' }));
+      pending.delete(box);
+    }
+  };
+  onGunModel(() => requestAnimationFrame(fill));
+
+  const card = (id: string, name: string, type: string, rarity: string, make: () => string | null, onPick: () => void) => {
+    const pic = h('div', { class: 'inv-pic' }, h('span', { class: 'inv-load' }));
+    pending.set(pic, make);
+    const c = h('button', { class: `inv-card r-${rarity}` + (selected === id ? ' selected' : '') }, pic, h('div', { class: 'inv-name' }, h('b', {}, name), h('span', {}, type)));
+    c.onclick = () => {
+      selected = id;
+      main.querySelectorAll('.inv-card.selected').forEach((x) => x.classList.remove('selected'));
+      c.classList.add('selected');
+      onPick();
+    };
+    return c;
+  };
+
+  const showWeapon = (w: WeaponDef, team = 0) => {
+    agentView?.setAgent(team, lo.agent[team], lo.skin, w.key);
+    info.innerHTML = '';
+    const sw = h('div', { class: 'swatches' });
+    for (const s of SKINS) sw.append(Object.assign(h('i'), { style: `background:#${s.tint.toString(16).padStart(6, '0')}`, title: s.name } as any));
+    info.append(
+      h('div', { class: 'inv-title r-' + KIND_RARITY[w.kind] }, h('b', {}, w.kind === 'knife' ? KNIFE_NAMES[KNIFE_OF_TEAM[team]] : w.name), h('span', {}, (w.kind === 'knife' ? (team === 0 ? 'Нож нападения' : 'Нож защиты') : KIND_LABEL[w.kind]) + (w.price ? ` · $${w.price}` : ''))),
+      statBars(w),
+      h('div', { class: 'panel-title small' }, 'РАСКРАСКИ'),
+      sw,
+      h('p', { class: 'hint' }, 'Раскраска выбирается в «Снаряжении»; это только косметика — на хитбоксы и баланс не влияет.'),
+    );
+  };
+  const showAgent = (team: number, i: number, name: string) => {
+    agentView?.setAgent(team, i, lo.skin, lo.primary[team]);
+    info.innerHTML = '';
+    info.append(
+      h('div', { class: 'inv-title r-agent' + team }, h('b', {}, name), h('span', {}, team === 0 ? 'Агент нападения' : 'Агент защиты')),
+      h('p', {}, team === 0 ? 'Сторона нападения: балаклава, куфия, оливковый жилет с подсумками.' : 'Сторона защиты: шлем с очками, чёрный бронежилет, камуфляж.'),
+      h('p', { class: 'hint' }, 'Выбрать агента для матча можно в «Снаряжении».'),
+    );
+  };
+
   const render = () => {
-    left.innerHTML = '';
-    const fbar = h('div', { class: 'filters' });
+    main.innerHTML = '';
+    const fbar = h('div', { class: 'inv-filters' });
     for (const [k, label] of filters) {
-      const b = h('button', { class: 'btn small' + (filter === k ? ' active' : '') }, label);
+      const b = h('button', { class: 'inv-tab' + (filter === k ? ' active' : '') }, label);
       b.onclick = () => {
         filter = k;
         render();
       };
       fbar.append(b);
     }
-    left.append(fbar);
-    const grid = h('div', { class: 'grid' });
-    left.append(grid);
-    if (filter === 'agents' || filter === 'all') {
-      for (const team of [0, 1])
-        AGENTS[team].forEach((name, i) => {
-          const it = h('button', { class: 'item agent t' + team }, h('b', {}, name), h('span', {}, team === 0 ? 'Нападение' : 'Защита'));
-          it.onclick = () => {
-            agentView?.setAgent(team, i, lo.skin);
-            detail.innerHTML = '';
-            detail.append(h('div', { class: 'panel-title' }, name), h('p', {}, team === 0 ? 'Сторона нападения: балаклава, куфия, оливковый жилет с подсумками.' : 'Сторона защиты: шлем с очками, чёрный бронежилет, камуфляж.'), h('p', { class: 'hint' }, 'Выбрать агента можно в «Снаряжении».'));
-          };
-          grid.append(it);
-        });
-    }
-    for (const w of WEAPONS) {
+    const grid = h('div', { class: 'inv-grid' });
+    main.append(fbar, grid);
+    const order = ['rifle', 'sniper', 'smg', 'shotgun', 'pistol', 'knife', 'grenade'];
+    const weapons = WEAPONS.slice().sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || b.price - a.price);
+    for (const w of weapons) {
       const cat = w.kind === 'knife' ? 'knife' : w.kind === 'grenade' ? 'grenade' : w.slot === SLOT_PISTOL ? 'pistol' : 'primary';
       if (filter !== 'all' && filter !== cat) continue;
-      const it = h('button', { class: 'item' }, h('b', {}, w.name), h('span', {}, ({ knife: 'Нож', pistol: 'Пистолет', smg: 'Пистолет-пулемёт', shotgun: 'Дробовик', rifle: 'Винтовка', sniper: 'Снайперская', grenade: 'Граната' } as Record<string, string>)[w.kind]));
-      const sw = h('div', { class: 'swatches' });
-      for (const s of SKINS) sw.append(Object.assign(h('i'), { style: `background:#${s.tint.toString(16).padStart(6, '0')}`, title: s.name } as any));
-      it.append(sw);
-      it.onclick = () => {
-        agentView?.setAgent(0, lo.agent[0], lo.skin, w.key);
-        detail.innerHTML = '';
-        detail.append(h('div', { class: 'panel-title' }, w.name), statBars(w), h('p', { class: 'hint' }, 'Раскраски — только косметика: на хитбоксы и баланс не влияют.'));
-      };
-      grid.append(it);
+      if (w.kind === 'knife') {
+        // у каждой стороны свой нож: керамбит у нападения, штык-нож у защиты
+        for (const team of [0, 1]) {
+          const kn = KNIFE_OF_TEAM[team];
+          grid.append(card(`w:knife:${team}`, KNIFE_NAMES[kn], team === 0 ? 'Нож нападения' : 'Нож защиты', 'gold', () => weaponRender(w.key, lo.skin, team), () => showWeapon(w, team)));
+        }
+        continue;
+      }
+      grid.append(card('w:' + w.key, w.name, KIND_LABEL[w.kind], KIND_RARITY[w.kind], () => weaponRender(w.key, lo.skin), () => showWeapon(w)));
     }
+    if (filter === 'agents' || filter === 'all') {
+      for (const team of [0, 1])
+        AGENTS[team].forEach((name, i) => grid.append(card(`a:${team}:${i}`, name, team === 0 ? 'Агент нападения' : 'Агент защиты', 'agent' + team, () => agentRender(team, i, lo.skin), () => showAgent(team, i, name))));
+    }
+    // рендер картинок — по кадрам, чтобы не подвешивать меню
+    requestAnimationFrame(fill);
   };
   render();
-  detail.append(h('div', { class: 'panel-title' }, 'ИНВЕНТАРЬ'), h('p', {}, 'Всё доступно с первого дня: кейсов, дропа и покупок нет. В раунде оружие всё равно покупается за игровые деньги.'));
+  const first = WEAPONS.find((w) => w.key === lo.primary[0]) ?? WEAPONS[5];
+  showWeapon(first);
 }
 
 function renderLoadout(body: HTMLElement, center: HTMLElement, canvas: HTMLCanvasElement) {

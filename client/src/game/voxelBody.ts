@@ -22,6 +22,7 @@ import {
 import type { Debris } from './debris';
 import { LIMB_SPLIT, Ragdoll, SEG_COUNT } from './ragdoll';
 import { cloneGun, gunModel } from './weaponModels';
+import { disposeKnife, KNIFE_OF_TEAM, makeKnife } from './knifeModels';
 
 const FLESH = 0x5a0f0f;
 const WOUND_RING = 0x7a0d0d;
@@ -166,12 +167,21 @@ export class VoxelBody {
   /** Оружие в руках: модель из пака по ключу (vikhr, osa…), если загружена, иначе коробка по виду. */
   setWeapon(kind: string, key = '') {
     const model = key && kind !== 'none' ? gunModel(key) : null;
-    const state = model ? 'm:' + key : 'b:' + kind;
+    const state = model ? 'm:' + key : kind === 'knife' ? 'k:' + this.team : 'b:' + kind;
     if (state === this.gunKind) return;
     this.gunKind = state;
     if (this.gunModel) {
       this.gunHolder.remove(this.gunModel);
+      if (this.gunModel.userData.knife) disposeKnife(this.gunModel);
       this.gunModel = null;
+    }
+    if (kind === 'knife') {
+      // нож стороны: керамбит у нападения, штык-нож у защиты
+      this.gunModel = makeKnife(KNIFE_OF_TEAM[this.team === 0 ? 0 : 1], SKINS[this.skin]?.tint ?? 0xffffff);
+      this.gunModel.userData.knife = true;
+      this.gunHolder.add(this.gunModel);
+      this.gun.visible = false;
+      return;
     }
     if (model) {
       this.gunModel = cloneGun(key, SKINS[this.skin]?.tint ?? 0xffffff);

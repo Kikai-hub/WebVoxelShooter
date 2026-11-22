@@ -89,6 +89,8 @@ export class AgentView {
     this.body = new VoxelBody(team, agent, skin, this.mat);
     const def = WEAPONS.find((w) => w.key === weapon) ?? WEAPONS.find((w) => w.key === 'vikhr')!;
     this.weaponKind = def.kind;
+    // длинное оружие — опущено наискосок перед собой, пистолет — поднят у плеча дулом вверх
+    this.hold = def.kind === 'pistol' ? 'up' : def.kind === 'knife' || def.kind === 'grenade' ? undefined : 'low';
     this.weaponKey = def.key;
     this.body.setWeapon(def.kind, def.key);
     this.scene.add(this.body.group);
@@ -124,6 +126,7 @@ export class AgentView {
   private anim = newPoseAnim();
   private weaponKind = 'rifle';
   private weaponKey = 'vikhr';
+  private hold: 'low' | 'up' | undefined = 'low';
   private cur = { pitch: -0.55, legL: 0, legR: 0, kneeL: 0, kneeR: 0, armL: 0, lean: 0, look: 0 };
 
   private animateIdle(dt: number) {
@@ -132,7 +135,7 @@ export class AgentView {
     // перенос веса: опорная нога прямая, другая чуть согнута и выставлена
     const shift = Math.sin(t * 0.35) > 0 ? 1 : -1;
     const target = {
-      pitch: k === 0 ? -0.6 : k === 1 ? -0.08 : -0.38,
+      pitch: this.hold ? -0.1 : k === 0 ? -0.6 : k === 1 ? -0.08 : -0.38,
       legL: shift > 0 ? 0.1 : -0.02,
       legR: shift > 0 ? -0.02 : 0.1,
       kneeL: shift > 0 ? 0.28 : 0.04,
@@ -160,6 +163,7 @@ export class AgentView {
     a.weapon = this.weaponKind;
     applyFore(a, this.weaponKey);
     a.headYaw = c.look;
+    a.hold = this.hold;
     const yaw = Math.PI + 0.35 + this.dragYaw;
     computePose(0, 0, 0, yaw, c.pitch, false, this.pose, a);
     this.body!.setWeapon(this.weaponKind, this.weaponKey); // модель могла догрузиться

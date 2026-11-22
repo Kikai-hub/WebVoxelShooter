@@ -17,6 +17,7 @@ export const ACTIONS = [
   { id: 'knife', label: 'Нож', keys: ['Digit3'] },
   { id: 'grenade', label: 'Гранаты (по кругу)', keys: ['Digit4'] },
   { id: 'lastWeapon', label: 'Прошлое оружие', keys: ['KeyQ'] },
+  { id: 'inspect', label: 'Осмотреть оружие', keys: ['KeyF'] },
   { id: 'buy', label: 'Меню покупки', keys: ['KeyB'] },
   { id: 'team', label: 'Сменить команду', keys: ['KeyM'] },
   { id: 'scoreboard', label: 'Таблица счёта', keys: ['Tab'] },

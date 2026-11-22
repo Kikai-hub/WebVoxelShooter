@@ -91,6 +91,8 @@ export interface PoseAnim {
   /** закладка/обезвреживание 0..1: на колене, руки у земли; useT — время для движения пальцев */
   use: number;
   useT: number;
+  /** поза в меню: low — длинное оружие опущено наискосок перед собой, up — пистолет поднят у плеча дулом вверх */
+  hold?: 'low' | 'up';
   /** вид оружия в руках: от него зависит хват */
   weapon: string;
   /** цевьё конкретной модели относительно рукояти: вперёд вдоль ствола и вверх, м (0 — по виду оружия) */
@@ -255,6 +257,32 @@ function computeAnimatedPose(x: number, y: number, z: number, yaw: number, pitch
     }
     // бомба в руках — горизонтально, у правой кисти
     writePart(an.gun, 0, lx(grip[0], grip[2]), grip[1], lz(grip[0], grip[2]), yaw, gp * (1 - u), 1);
+  }
+
+  // ---- позы для меню (оружие держится не по взгляду) ----
+  if (an.hold) {
+    const low = an.hold === 'low';
+    // поворот ствола относительно тела: gy > 0 — влево, gpH — вверх/вниз
+    const gy = low ? 0.8 : -0.12,
+      gpH = low ? -0.62 : 1.32;
+    const g0: [number, number, number] = low ? [0.17, shY - 0.4, topZ - 0.24] : [0.3, shY + 0.18, topZ - 0.1];
+    grip[0] = g0[0];
+    grip[1] = g0[1];
+    grip[2] = g0[2];
+    writePart(an.gun, 0, lx(g0[0], g0[2]), g0[1], lz(g0[0], g0[2]), yaw + gy, gpH, 1);
+    if (low) {
+      // левая кисть — на цевье: вдоль ствола от рукояти
+      const d = an.foreD > 0 ? an.foreD : 0.3;
+      const cp = Math.cos(gpH);
+      left[0] = g0[0] - Math.sin(gy) * cp * d;
+      left[1] = g0[1] + Math.sin(gpH) * d + (an.foreUp - 0.02) * cp;
+      left[2] = g0[2] - Math.cos(gy) * cp * d;
+    } else {
+      // левая рука свободно вдоль тела
+      left[0] = -0.27;
+      left[1] = shY - 0.62;
+      left[2] = topZ + 0.02;
+    }
   }
 
   // ---- руки: плечо → локоть → кисть ----

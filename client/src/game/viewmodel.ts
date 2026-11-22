@@ -4,10 +4,71 @@
 import * as THREE from 'three';
 import { SKINS, WEAPONS, type WeaponDef } from '../../../shared/src/index';
 import { cloneGun, gunModel, onGunModel } from './weaponModels';
+import { KNIFE_OF_TEAM, makeKnife } from './knifeModels';
 
 /** где правая перчатка держит рукоять (система root) и масштаб моделей от первого лица */
 const VM_GRIP = new THREE.Vector3(0.0, -0.025, -0.01);
 const VM_SCALE = 0.85;
+/** длина левого рукава (коробка вдоль Z) */
+const SLEEVE_L_LEN = 0.38;
+
+/** Ключевой кадр осмотра: доля времени k и смещение рук с оружием (позиция, повороты). */
+type InspectKey = [k: number, px: number, py: number, pz: number, rx: number, ry: number, rz: number];
+const N: InspectKey = [0, 0, 0, 0, 0, 0, 0];
+/** Осмотр по видам оружия: длительность и кадры (между ними — плавная интерполяция). */
+const INSPECT: Record<string, { dur: number; keys: InspectKey[] }> = {
+  // длинное: боком к себе, переворот на бок, взгляд на дуло и обратно
+  long: {
+    dur: 3.4,
+    keys: [
+      N,
+      [0.16, -0.13, 0.05, 0.03, 0.12, 0.95, 0.3],
+      [0.36, -0.13, 0.06, 0.03, 0.12, 0.95, 0.42],
+      [0.52, -0.09, 0.07, 0.02, -0.25, -0.2, -0.95],
+      [0.68, -0.09, 0.07, 0.02, -0.25, -0.2, -1.0],
+      [0.82, -0.06, 0.03, -0.02, 0.4, 0.45, 0.05],
+      [1, 0, 0, 0, 0, 0, 0],
+    ],
+  },
+  pistol: {
+    dur: 2.8,
+    keys: [
+      N,
+      [0.2, -0.11, 0.06, 0.04, 0.15, 1.1, 0.25],
+      [0.45, -0.11, 0.07, 0.04, 0.15, 1.15, 0.35],
+      [0.62, -0.08, 0.06, 0.04, -0.1, -0.5, -0.8],
+      [0.82, -0.08, 0.05, 0.03, -0.1, -0.55, -0.85],
+      [1, 0, 0, 0, 0, 0, 0],
+    ],
+  },
+  // нож: клинок боком, прокрутка вокруг рукояти, показ острия
+  knife: {
+    dur: 3.0,
+    keys: [
+      N,
+      [0.18, -0.12, 0.07, 0.03, 0.1, 1.2, 0.35],
+      [0.38, -0.12, 0.08, 0.03, 0.1, 1.25, 0.4],
+      [0.6, -0.1, 0.08, 0.02, 0.1, 1.25, 0.4 + Math.PI * 2],
+      [0.8, -0.08, 0.06, 0.0, 0.55, 0.3, Math.PI * 2 - 0.3],
+      [1, 0, 0, 0, 0, 0, Math.PI * 2],
+    ],
+  },
+  // граната: подбросить с вращением и поймать
+  grenade: {
+    dur: 2.4,
+    keys: [
+      N,
+      [0.2, -0.08, 0.02, 0.0, 0.2, 0.6, 0.2],
+      [0.42, -0.08, 0.16, -0.02, 0.2 + Math.PI * 2, 0.6, 0.2],
+      [0.6, -0.08, 0.03, 0.0, Math.PI * 2 + 0.25, 0.65, 0.25],
+      [1, 0, 0, 0, Math.PI * 2, 0, 0],
+    ],
+  },
+};
+
+function smooth(t: number): number {
+  return t * t * (3 - 2 * t);
+}
 
 function box(w: number, h: number, d: number, color: number, x: number, y: number, z: number): THREE.Mesh {
   const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
@@ -16,7 +77,9 @@ function box(w: number, h: number, d: number, color: number, x: number, y: numbe
 }
 
 /** Оружие: модель из пака, если загружена, иначе блочное. Начало — точка хвата, дуло вдоль −Z. */
-export function buildGun(def: WeaponDef, tint: number): THREE.Group {
+/** team — сторона: от неё зависит нож (0 — керамбит, 1 — штык-нож). */
+export function buildGun(def: WeaponDef, tint: number, team = 1): THREE.Group {
+  if (def.kind === 'knife') return makeKnife(KNIFE_OF_TEAM[team === 0 ? 0 : 1], tint);
   const model = cloneGun(def.key, tint);
   if (model) return model;
   const g = new THREE.Group();
@@ -49,10 +112,6 @@ export function buildGun(def: WeaponDef, tint: number): THREE.Group {
       g.add(box(0.015, 0.015, 0.05, 0xc9a23a, 0.025, 0.09, -0.02));
       break;
     }
-    case 'knife':
-      g.add(box(0.03, 0.05, 0.12, 0x2a2420, 0, 0, 0.05));
-      g.add(box(0.012, 0.045, 0.22, 0xb9c0c6, 0, 0.01, -0.12));
-      break;
     case 'pistol':
       g.add(box(0.05, 0.06, 0.2, metal, 0, 0.03, -0.06));
       g.add(box(0.045, 0.12, 0.06, metal2, 0, -0.05, 0.01));
@@ -172,12 +231,24 @@ export class ViewModel {
 
   /** Закладка (нападение), обезвреживание (защита) или ничего. */
   setUse(kind: 'plant' | 'defuse' | null) {
+    if (kind) this.cancelInspect();
     if (kind) this.useKind = kind;
     this.useTarget = kind ? 1 : 0;
   }
   private useTarget = 0;
 
+  private team = 1;
+
   setTeam(team: number) {
+    if (team !== this.team && (team === 0 || team === 1)) {
+      this.team = team;
+      // нож у сторон разный — пересобрать, если он в руках
+      const cur = this.current;
+      if (WEAPONS[cur]?.kind === 'knife') {
+        this.current = -1;
+        this.setWeapon(cur);
+      }
+    }
     const sl = team === 0 ? 0xc2a77a : 0x2f4f7f;
     const gl = team === 0 ? 0x3a3a30 : 0x141518;
     for (const s of this.useSleeves) (s.material as THREE.MeshLambertMaterial).color.set(sl);
@@ -190,19 +261,22 @@ export class ViewModel {
 
   setWeapon(id: number) {
     if (id === this.current) return;
+    this.cancelInspect();
     this.current = id;
     for (const g of this.guns.values()) g.visible = false;
     const def = WEAPONS[id];
     const model = def ? gunModel(def.key) : null;
-    let g = this.guns.get(id);
+    // нож у каждой стороны свой — в кэше под отдельным ключом
+    const ck = def?.kind === 'knife' ? 1000 + this.team : id;
+    let g = this.guns.get(ck);
     if (!g) {
-      g = buildGun(def ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff);
+      g = buildGun(def ?? WEAPONS[1], SKINS[this.skin]?.tint ?? 0xffffff, this.team);
       if (model) {
         // модель: точка хвата — в правой перчатке
         g.scale.setScalar(VM_SCALE);
         g.position.copy(VM_GRIP);
       }
-      this.guns.set(id, g);
+      this.guns.set(ck, g);
       this.gunHolder.add(g);
     }
     g.visible = true;
@@ -230,13 +304,72 @@ export class ViewModel {
     this.switchT = 0.3;
   }
 
+  // ---------- Осмотр оружия (F) ----------
+  private inspectT = -1;
+  private inspectAnim = INSPECT.long;
+
+  /** Начать осмотр (если не идёт смена оружия, перезарядка или закладка). */
+  inspect() {
+    if (this.inspectT >= 0 || this.switchT > 0.05 || this.reloadT > 0 || this.useTarget > 0) return;
+    const kind = WEAPONS[this.current]?.kind ?? 'rifle';
+    this.inspectAnim = INSPECT[kind === 'pistol' || kind === 'knife' || kind === 'grenade' ? kind : 'long'];
+    this.inspectT = 0;
+    // левый рукав: запомнить, где он выходит из-за края экрана (это «плечо» — оно не двигается)
+    this.root.updateMatrixWorld(true);
+    this.sleeveHome = { pos: this.sleeveL.position.clone(), quat: this.sleeveL.quaternion.clone() };
+    this.shoulderL = this.sleeveL.localToWorld(new THREE.Vector3(0, 0, SLEEVE_L_LEN / 2));
+  }
+
+  /** Левый рукав во время осмотра и его исходное положение (вернуть после). */
+  private sleeveHome: { pos: THREE.Vector3; quat: THREE.Quaternion } | null = null;
+  private shoulderL = new THREE.Vector3();
+  private tmpA = new THREE.Vector3();
+  private tmpQ = new THREE.Quaternion();
+
+  /**
+   * Оружие поворачивается вокруг правой кисти, левая кисть остаётся на цевье, а рукав тянется
+   * к ней от неподвижного «плеча» у края экрана — рука не отрывается и не уходит вверх вместе со стволом.
+   */
+  private fitLeftSleeve() {
+    if (!this.sleeveL.visible || !this.sleeveHome) return;
+    this.root.updateMatrixWorld(true);
+    const a = this.root.worldToLocal(this.tmpA.copy(this.shoulderL)); // плечо в системе рук
+    const g = this.gloveL.position;
+    const dir = a.clone().sub(g);
+    const len = Math.max(0.05, dir.length());
+    dir.divideScalar(len);
+    this.sleeveL.position.copy(g).addScaledVector(dir, len / 2);
+    this.sleeveL.quaternion.copy(this.tmpQ.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir));
+    this.sleeveL.scale.set(1, 1, len / SLEEVE_L_LEN);
+  }
+
+  private restoreLeftSleeve() {
+    if (!this.sleeveHome) return;
+    this.sleeveL.position.copy(this.sleeveHome.pos);
+    this.sleeveL.quaternion.copy(this.sleeveHome.quat);
+    this.sleeveL.scale.set(1, 1, 1);
+    this.sleeveHome = null;
+  }
+
+  /** Прервать осмотр: выстрел, перезарядка, смена оружия, прицел. */
+  cancelInspect() {
+    this.inspectT = -1;
+    this.restoreLeftSleeve();
+  }
+
+  get inspecting(): boolean {
+    return this.inspectT >= 0;
+  }
+
   fire() {
+    this.cancelInspect();
     this.kick = 1;
     this.flashTime = 0.05;
     this.flash.rotation.z = Math.random() * Math.PI;
   }
 
   reload(dur: number) {
+    this.cancelInspect();
     this.reloadT = dur;
     this.reloadDur = dur;
   }
@@ -281,7 +414,28 @@ export class ViewModel {
     }
     const bx = Math.sin(this.bob) * 0.012 * Math.min(1, speed / 5);
     const by = Math.abs(Math.cos(this.bob)) * 0.012 * Math.min(1, speed / 5);
-    this.root.position.set(0.22 + bx, -0.24 - by - dip, -0.42 + this.kick * 0.05);
-    this.root.rotation.set(this.kick * 0.12 + dip * 0.8, 0, dip * 0.5);
+    // осмотр: смещение и поворот рук с оружием по ключевым кадрам
+    const o = [0, 0, 0, 0, 0, 0];
+    if (scoped || !visible) this.cancelInspect();
+    if (this.inspectT >= 0) {
+      this.inspectT += dt;
+      const a = this.inspectAnim;
+      const k = this.inspectT / a.dur;
+      if (k >= 1) {
+        this.inspectT = -1;
+        this.restoreLeftSleeve();
+      }
+      else {
+        let i = 0;
+        while (i < a.keys.length - 2 && k > a.keys[i + 1][0]) i++;
+        const p = a.keys[i],
+          q = a.keys[i + 1];
+        const s = smooth(Math.min(1, Math.max(0, (k - p[0]) / Math.max(1e-6, q[0] - p[0]))));
+        for (let j = 0; j < 6; j++) o[j] = p[j + 1] + (q[j + 1] - p[j + 1]) * s;
+      }
+    }
+    this.root.position.set(0.22 + bx + o[0], -0.24 - by - dip + o[1], -0.42 + this.kick * 0.05 + o[2]);
+    this.root.rotation.set(this.kick * 0.12 + dip * 0.8 + o[3], o[4], dip * 0.5 + o[5]);
+    if (this.inspectT >= 0) this.fitLeftSleeve();
   }
 }

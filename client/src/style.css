@@ -1504,3 +1504,201 @@ input {
     max-height: none;
   }
 }
+
+/* ---------- Инвентарь в духе CS2: ячейки с моделями посередине, выбранный предмет справа ---------- */
+.inv-layout {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
+  min-height: 0;
+  max-height: 100%;
+}
+.inv-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-width: 1180px;
+  width: 100%;
+  justify-self: center;
+}
+.inv-filters {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.inv-tab {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 10px 16px 8px;
+  font-family: var(--wide);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  cursor: pointer;
+}
+.inv-tab:hover {
+  color: var(--text);
+}
+.inv-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.inv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px 6px 12px 2px;
+  scrollbar-width: thin;
+}
+.inv-card {
+  --r: #b0c3d9;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  background: radial-gradient(ellipse at 50% 40%, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.02) 70%), rgba(14, 16, 20, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 3px solid var(--r);
+  border-radius: 3px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.12s, background 0.12s, border-color 0.12s;
+}
+.inv-card::before {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 45%;
+  background: linear-gradient(transparent, color-mix(in srgb, var(--r) 22%, transparent));
+  pointer-events: none;
+}
+.inv-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.22);
+  border-bottom-color: var(--r);
+}
+.inv-card.selected {
+  border-color: var(--accent);
+  border-bottom-color: var(--r);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.inv-pic {
+  height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px 0;
+}
+.inv-pic img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, 0.55));
+}
+.inv-load {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: inv-spin 0.8s linear infinite;
+}
+@keyframes inv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.inv-name {
+  position: relative;
+  padding: 6px 10px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.inv-name b {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inv-name span {
+  font-size: 11px;
+  color: var(--r);
+}
+/* «редкость» по типу предмета */
+.r-common {
+  --r: #b0c3d9;
+}
+.r-mil {
+  --r: #4b69ff;
+}
+.r-restricted {
+  --r: #8847ff;
+}
+.r-classified {
+  --r: #d32ce6;
+}
+.r-covert {
+  --r: #eb4b4b;
+}
+.r-gold {
+  --r: #e4ae39;
+}
+.r-agent0 {
+  --r: #e0a84a;
+}
+.r-agent1 {
+  --r: #5b9bd5;
+}
+.inv-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+  align-self: stretch;
+}
+.inv-preview {
+  height: 330px;
+  flex: none;
+  margin: -16px -16px 10px;
+  background: radial-gradient(ellipse at 50% 60%, rgba(255, 255, 255, 0.08), transparent 70%);
+}
+.inv-preview .agent-canvas {
+  height: 100%;
+}
+.inv-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: 3px solid var(--r, var(--accent));
+  margin-bottom: 12px;
+}
+.inv-title b {
+  font-family: var(--wide);
+  letter-spacing: 0.06em;
+  font-size: 16px;
+}
+.inv-title span {
+  font-size: 12px;
+  color: var(--r, var(--muted));
+}
+@media (max-width: 900px) {
+  .inv-layout {
+    grid-template-columns: 1fr;
+  }
+  .inv-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}

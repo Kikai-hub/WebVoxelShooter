@@ -908,8 +908,16 @@ function renderSettings(body: HTMLElement) {
   const credits = h('div', { class: 'panel settings' });
   body.append(credits);
   const link = (href: string, text: string) => h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
+  const studioLink = (href: string, text: string, cls: string) => h('a', { href, target: '_blank', rel: 'noopener noreferrer', class: 'studio-link ' + cls }, h('i'), text);
   credits.append(
     h('div', { class: 'panel-title' }, 'ТИТРЫ'),
+    h(
+      'div',
+      { class: 'studio' },
+      h('b', {}, 'FakeStudios'),
+      h('span', { class: 'hint' }, 'Voxel Tactical — проект студии FakeStudios. Новости, видео и общение с разработчиками — на наших каналах.'),
+      h('div', { class: 'studio-links' }, studioLink('https://www.youtube.com/@FakeStudiosOfficialChannel', 'YouTube', 'yt'), studioLink('https://discord.gg/gPt5NgA6rH', 'Discord', 'dc')),
+    ),
     h('p', { class: 'hint' }, 'Модели оружия: Low Poly Weapons Pack, автор Zsky (', link('https://www.patreon.com/Zsky', 'patreon.com/Zsky'), '). Лицензия ', link('https://creativecommons.org/licenses/by/4.0/', 'CC BY 4.0'), '. Изменения: масштаб, ориентация, материалы.'),
     h('p', { class: 'hint' }, 'Звуки выстрелов: The Free Firearm Sound Library, Still North Media (CC0). Изменения: нарезка, сведение в моно.'),
   );

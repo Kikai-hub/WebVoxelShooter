@@ -1986,11 +1986,71 @@ input {
   flex-direction: column;
   gap: 20px;
 }
-/* блоки во всю высоту, без своей прокрутки */
+/* блоки во всю высоту и во всю ширину колонки, без своей прокрутки */
 .settings-page .panel {
   max-height: none;
   overflow: visible;
   flex: none;
+  align-self: stretch;
+  width: auto;
+  min-width: 0;
+}
+.menu-body.settings-page {
+  align-items: flex-start;
+}
+.settings-page .panel a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(246, 196, 92, 0.4);
+}
+.settings-page .panel a:hover {
+  border-bottom-color: var(--accent);
+}
+/* студия: ссылки на каналы */
+.studio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+}
+.studio b {
+  font-family: var(--wide);
+  letter-spacing: 0.08em;
+  font-size: 15px;
+}
+.studio-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-page .panel a.studio-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--text);
+  font-family: var(--wide);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.settings-page .panel a.studio-link:hover {
+  border-color: var(--accent);
+}
+.studio-link i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.studio-link.yt i {
+  background: #ff3b3b;
+}
+.studio-link.dc i {
+  background: #5865f2;
 }
 @media (max-width: 900px) {
   .menu-body.settings-page {

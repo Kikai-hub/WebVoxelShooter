@@ -21,7 +21,8 @@
     "test:wingman": "tsx tools/wingman.ts",
     "test:party": "tsx tools/party.ts",
     "test:lobby": "tsx tools/lobbye2e.ts",
-    "test:assist": "tsx tools/assist.ts"
+    "test:assist": "tsx tools/assist.ts",
+    "test:sides": "tsx tools/sides.ts"
   },
   "engines": {
     "node": ">=22"

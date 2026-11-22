@@ -903,7 +903,10 @@ export class Room {
         p.pistol = inst(DEFAULT_PISTOL);
         p.armor = 0;
         p.helmet = false;
-      p.hasKit = false;
+        p.hasKit = false;
+        // гранаты с прошлой половины не переходят на другую сторону (молотов атаки — не у защиты)
+        p.nades = [0, 0, 0, 0];
+        p.purchases = [];
         if (!p.isBot) p.agent = p.loadout.agent[p.team] ?? 0;
       }
       this.scores = [this.scores[1], this.scores[0]];

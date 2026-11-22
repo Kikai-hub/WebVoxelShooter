@@ -1178,7 +1178,9 @@ export class Game {
       return;
     }
     if (this.bound(code, 'team')) {
-      this.toggleTeamMenu();
+      // в рейтинге стороны фиксированы — меню не открываем (сервер всё равно не даст)
+      if (!this.publicMode) this.hud.info('В рейтинговом матче команду сменить нельзя');
+      else this.toggleTeamMenu();
       return;
     }
     if (this.bound(code, 'buy')) {

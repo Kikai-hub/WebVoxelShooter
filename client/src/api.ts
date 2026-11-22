@@ -21,6 +21,7 @@ export interface Settings {
 export interface PlayerStats {
   kills: number;
   deaths: number;
+  assists?: number;
   headshots: number;
   damage: number;
   shots: number;

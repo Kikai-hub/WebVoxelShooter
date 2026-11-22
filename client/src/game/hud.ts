@@ -352,9 +352,14 @@ export class Hud {
   }
 
   /** Строка ленты: убийца · силуэт оружия · значок попадания в голову · жертва. */
-  killFeed(killer: string, kTeam: number, victim: string, vTeam: number, weapon: { key: string; name: string } | null, hs: boolean, ex: boolean, mine: boolean) {
+  killFeed(killer: string, kTeam: number, victim: string, vTeam: number, weapon: { key: string; name: string } | null, hs: boolean, ex: boolean, mine: boolean, assister = '') {
     const row = el('div', 'kf' + (mine ? ' mine' : ''), this.feed);
     if (killer) el('span', 'team' + kTeam, row, killer);
+    // помощник — как в CS: «убийца + помощник»
+    if (killer && assister) {
+      el('span', 'kf-plus', row, '+');
+      el('span', 'team' + kTeam + ' kf-assist', row, assister);
+    }
     const icon = (key: string, title: string) => {
       const url = weaponIcon(key);
       if (url) {
@@ -484,7 +489,7 @@ export class Hud {
       const hr = el('tr', '', tbl);
       // звания приходят только после конца матча — тогда в таблице появляется столбец
       const ranks = st.pl.some((q) => q.rk);
-      for (const h of ['Игрок', ...(ranks ? ['Звание'] : []), 'Убийства', 'Смерти', 'Деньги']) el('th', '', hr, h);
+      for (const h of ['Игрок', ...(ranks ? ['Звание'] : []), 'Убийства', 'Помощь', 'Смерти', 'Деньги']) el('th', '', hr, h);
       for (const p of st.pl.filter((q) => q.t === team).sort((a, b) => b.k - a.k)) {
         const tr = el('tr', (p.a ? '' : 'dead') + (p.i === myId ? ' me' : ''), tbl);
         const name = el('td', 'board-name', tr);
@@ -500,6 +505,7 @@ export class Hud {
           if (p.rc) td.style.color = p.rc;
         }
         el('td', '', tr, String(p.k));
+        el('td', '', tr, String(p.as ?? 0));
         el('td', '', tr, String(p.d));
         el('td', '', tr, p.m >= 0 ? '$' + p.m : '');
       }

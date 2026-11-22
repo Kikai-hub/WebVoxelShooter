@@ -373,8 +373,10 @@ function renderStats(body: HTMLElement) {
       const favDef = fav ? WEAPONS.find((w) => w.key === fav[0]) : undefined;
       const cards: Array<[string, string, string?]> = [
         ['Убийства', String(s.kills)],
+        ['Помощь', String(s.assists ?? 0), 'нанёс 40+ урона, добил союзник'],
         ['Смерти', String(s.deaths)],
         ['K/D', num(s.kills / Math.max(1, s.deaths)), 'убийств на одну смерть'],
+        ['KDA', num((s.kills + (s.assists ?? 0)) / Math.max(1, s.deaths)), '(убийства + помощь) на смерть'],
         ['MVP', String(s.mvps), 'лучший игрок раунда'],
         ['В голову', pct(s.headshots, s.kills), 'доля убийств в голову'],
         ['Точность', pct(s.hits, s.shots), 'попаданий из выстрелов'],

@@ -754,7 +754,8 @@ export class Game {
         const k = this.pub(e.k),
           v = this.pub(e.v);
         const wd = k ? WEAPONS[e.w] : null;
-        this.hud.killFeed(k ? k.n : '', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, wd ? { key: wd.key, name: wd.name } : null, e.hs, e.ex, e.k === this.myId || e.v === this.myId);
+        const as = e.as !== undefined && e.as >= 0 ? this.pub(e.as) : undefined;
+        this.hud.killFeed(k ? k.n : '', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, wd ? { key: wd.key, name: wd.name } : null, e.hs, e.ex, e.k === this.myId || e.v === this.myId || e.as === this.myId, as ? as.n : '');
         // «Headshot» — только тому, кто убил в голову; в рейтинговых режимах комментатора нет
         if (e.k === this.myId && e.hs && this.publicMode) this.sfx.announce('headshot');
         if (e.k === this.myId) {

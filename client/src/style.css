@@ -2061,3 +2061,12 @@ input {
 .settings-page .row {
   grid-template-columns: minmax(120px, 1fr) minmax(120px, 180px) 44px;
 }
+
+/* лента убийств: «убийца + помощник» */
+.kf-plus {
+  color: #ddd;
+  margin: 0 -4px;
+}
+.kf-assist {
+  opacity: 0.85;
+}

@@ -31,6 +31,8 @@ export const DEFAULT_SETTINGS: Settings = { sens: 1, fov: 90, tracers: true, tra
 export interface PlayerStats {
   kills: number;
   deaths: number;
+  /** помощь в убийствах (нанёс 40+ урона, добил союзник) */
+  assists: number;
   headshots: number;
   damage: number;
   shots: number;
@@ -47,7 +49,7 @@ export interface PlayerStats {
 export type StatDelta = Partial<Omit<PlayerStats, 'weapons'>> & { weapon?: string };
 
 export function emptyStats(): PlayerStats {
-  return { kills: 0, deaths: 0, headshots: 0, damage: 0, shots: 0, hits: 0, mvps: 0, rounds: 0, roundsWon: 0, matches: 0, matchesWon: 0, playSeconds: 0, weapons: {} };
+  return { kills: 0, deaths: 0, assists: 0, headshots: 0, damage: 0, shots: 0, hits: 0, mvps: 0, rounds: 0, roundsWon: 0, matches: 0, matchesWon: 0, playSeconds: 0, weapons: {} };
 }
 
 /** Строка таблицы лидеров: место, ник, Elo (матчмейкинг) или звание 0–11 (союзники), матчи и победы. */

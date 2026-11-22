@@ -228,6 +228,10 @@ export class Player {
   wounds: number[] = [];
   kills = 0;
   deaths = 0;
+  /** помощь: нанёс жертве не меньше ASSIST_DAMAGE урона, а убил союзник */
+  assists = 0;
+  /** урон, полученный в этой жизни от каждого врага (слот → урон) — для помощи */
+  dmgTaken = new Map<number, number>();
   agent = 0;
   skin = 0;
   loadout: Loadout = DEFAULT_LOADOUT;
@@ -311,6 +315,9 @@ function loadedMap(id: string): { info: MapInfo; nav: NavGrid } {
 export function preloadMaps() {
   for (const id of Object.keys(MAPS)) loadedMap(id);
 }
+
+/** сколько урона нужно нанести жертве для помощи (40% от 100 здоровья) */
+export const ASSIST_DAMAGE = 40;
 
 export class Room {
   info!: MapInfo;
@@ -576,6 +583,7 @@ export class Room {
     p.nades = [0, 0, 0, 0];
     p.purchases = [];
     p.kills = 0;
+    p.assists = 0;
     p.deaths = 0;
     p.cmdQueue.length = 0;
     p.lastSeq = 0;
@@ -659,13 +667,14 @@ export class Room {
     const conn = from.conn;
     const to = this.botSlotOn(team);
     if (!conn || !to) return false;
-    const keep = { kills: from.kills, deaths: from.deaths, money: from.money };
+    const keep = { kills: from.kills, deaths: from.deaths, assists: from.assists, money: from.money };
     from.switchTo = null;
     this.makeBot(from);
     from.bot!.onRoundStart();
     this.replaceBot(to, conn);
     to.kills = keep.kills;
     to.deaths = keep.deaths;
+    to.assists = keep.assists;
     to.money = Math.max(START_MONEY, Math.min(MAX_MONEY, keep.money));
     this.events.push({ e: 'info', text: `${conn.login} перешёл в команду «${team === TEAM_T ? 'Нападение' : 'Защита'}»` });
     return true;
@@ -872,6 +881,7 @@ export class Room {
       p.helmet = false;
       p.hasKit = false;
       p.kills = 0;
+      p.assists = 0;
       p.deaths = 0;
       p.nades = [0, 0, 0, 0];
     }
@@ -932,6 +942,7 @@ export class Room {
       p.hp = 100;
       p.wounds = [];
       p.roundKills = 0;
+      p.dmgTaken.clear();
       p.roundDamage = 0;
       p.objective = false;
       p.purchases = [];
@@ -1377,6 +1388,7 @@ export class Room {
     if (attacker && attacker.team !== victim.team) {
       const dealt = Math.min(d, victim.hp);
       attacker.roundDamage += dealt;
+      victim.dmgTaken.set(attacker.id, (victim.dmgTaken.get(attacker.id) ?? 0) + dealt);
       this.stat(attacker, { damage: dealt });
     }
     victim.hp -= d;
@@ -1415,6 +1427,22 @@ export class Room {
         }
         attacker.money = Math.min(MAX_MONEY, attacker.money + def.killReward);
       }
+      // помощь, как в CS: союзник убийцы, нанёсший жертве не меньше 40 урона (больше всех из таких)
+      let assister: Player | null = null;
+      if (attacker && attacker !== victim && attacker.team !== victim.team) {
+        let best = ASSIST_DAMAGE - 1;
+        for (const [id, dealt] of victim.dmgTaken) {
+          const q = this.players[id];
+          if (!q || q === attacker || q.team !== attacker.team || dealt <= best) continue;
+          best = dealt;
+          assister = q;
+        }
+        if (assister) {
+          assister.assists++;
+          this.stat(assister, { assists: 1 });
+        }
+      }
+      victim.dmgTaken.clear();
       // оружие падает на землю: основное, а если его нет — купленный пистолет
       if (victim.primary) {
         victim.slot = SLOT_PRIMARY;
@@ -1427,7 +1455,7 @@ export class Room {
       victim.helmet = false;
       victim.hasKit = false;
       victim.purchases = [];
-      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
+      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, as: assister ? assister.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
       for (const q of this.players) q.bot?.onTeammateDeath(victim);
       if (victim.hasBomb) {
         victim.hasBomb = false;
@@ -1880,6 +1908,7 @@ export class Room {
       a: p.alive,
       k: p.kills,
       d: p.deaths,
+      as: p.assists,
       hp: forTeam === p.team || forTeam === -2 || !p.alive ? p.hp : -1,
       m: forTeam === p.team ? p.money : -1,
       w: p.weapon.id,

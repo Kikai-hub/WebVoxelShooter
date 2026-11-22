@@ -94,6 +94,7 @@ export class RoomManager {
     });
     room.onStat = (acc, d) => this.accounts.addStats(acc, d);
     room.onMatchOver = (r) => this.applyResult(r);
+    room.rankOf = (acc) => this.rankLabel(acc, wm ? 'wm' : 'mm');
     this.rooms.set(id, room);
     console.log(`комната ${id} создана (${map}), всего ${this.rooms.size}`);
     return room;
@@ -120,6 +121,17 @@ export class RoomManager {
     // мест у ботов нет и комнату не создать — наблюдателем, где есть место
     const watch = publics.find((r) => r.hasRoom());
     return watch ?? `Сервер заполнен: ${MAX_ROOMS} комнат заняты, попробуйте позже`;
+  }
+
+  /** Подпись звания для таблицы игроков: уровень и Elo матчмейкинга или звание союзников. */
+  rankLabel(accountId: string, mode: RankedMode): { r: string; c: string } {
+    const acc = this.accounts.get(accountId);
+    if (!acc) return { r: '???', c: '#9aa0a6' };
+    const rt = this.accounts.ratings(acc);
+    if (mode === 'wm') return rt.wm.rank === null ? { r: '???', c: '#9aa0a6' } : { r: WM_RANKS[rt.wm.rank].name, c: '#8fb4ff' };
+    if (rt.mm.matches === 0) return { r: '??? Elo', c: '#9aa0a6' };
+    const lv = mmLevel(rt.mm.elo);
+    return { r: `ур. ${lv.level} · ${rt.mm.elo} Elo`, c: lv.color };
   }
 
   // ---------- Очередь ----------

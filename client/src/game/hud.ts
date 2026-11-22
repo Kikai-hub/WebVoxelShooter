@@ -451,10 +451,16 @@ export class Hud {
       el('div', 'board-head', sec, `${TEAM_LABEL[team]} — ${st.sc[team]}`);
       const tbl = el('table', '', sec);
       const hr = el('tr', '', tbl);
-      for (const h of ['Игрок', 'Убийства', 'Смерти', 'Деньги']) el('th', '', hr, h);
+      // звания приходят только после конца матча — тогда в таблице появляется столбец
+      const ranks = st.pl.some((q) => q.rk);
+      for (const h of ['Игрок', ...(ranks ? ['Звание'] : []), 'Убийства', 'Смерти', 'Деньги']) el('th', '', hr, h);
       for (const p of st.pl.filter((q) => q.t === team).sort((a, b) => b.k - a.k)) {
         const tr = el('tr', (p.a ? '' : 'dead') + (p.i === myId ? ' me' : ''), tbl);
         el('td', '', tr, p.n + (p.c ? '' : ' (откл.)') + (p.bomb ? ' 💣' : '') + (p.kit ? ' ✚' : ''));
+        if (ranks) {
+          const td = el('td', 'board-rank', tr, p.b ? '—' : p.rk ?? '???');
+          if (p.rc) td.style.color = p.rc;
+        }
         el('td', '', tr, String(p.k));
         el('td', '', tr, String(p.d));
         el('td', '', tr, p.m >= 0 ? '$' + p.m : '');

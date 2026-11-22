@@ -43,6 +43,15 @@ export interface AccountInfo {
   };
 }
 export type RankedMode = 'mm' | 'wm';
+/** Строка таблицы лидеров: Elo — у матчмейкинга, звание 0–11 — у союзников. */
+export interface TopRow {
+  place: number;
+  login: string;
+  elo?: number;
+  rank?: number | null;
+  matches: number;
+  wins: number;
+}
 export interface QueueState {
   state: 'idle' | 'searching' | 'found';
   mode?: RankedMode;
@@ -115,6 +124,7 @@ export const api = {
   stats: () => call<{ stats: PlayerStats }>('GET', 'stats'),
   news: () =>call<{ version: { commit: string; date: string }; news: Array<{ date: string; title: string; items: string[] }> }>('GET', 'news'),
   status: () => call<ServerStatus>('GET', 'status'),
+  top: (mode: RankedMode) => call<{ mode: RankedMode; list: TopRow[]; me: TopRow | null; total: number }>('GET', 'top?mode=' + mode),
   queueJoin: (mode: RankedMode) => call<QueueState>('POST', 'queue', { mode }),
   queueState: () => call<QueueState>('GET', 'queue'),
   queueLeave: () => call<QueueState>('DELETE', 'queue'),

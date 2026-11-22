@@ -348,6 +348,8 @@ export class Room {
   private lastStateSent = 0;
   draining = false;
   onDrained: (() => void) | null = null;
+  /** звание игрока для таблицы после матча (в паблике и матчмейкинге — уровень и Elo, в союзниках — звание) */
+  rankOf: ((accountId: string) => { r: string; c: string }) | null = null;
   /** статистика игроков-людей: сервер сохраняет её в аккаунт */
   onStat: ((accountId: string, d: StatDelta) => void) | null = null;
 
@@ -1863,6 +1865,8 @@ export class Room {
     const b = this.bomb;
     // позицию бомбы знают нападающие, а после закладки — все
     const bombKnown = b.status === 'planted' || b.status === 'exploded' || b.status === 'defused' || forTeam === TEAM_T || forTeam === -2;
+    // звания видно только после конца матча — во время игры не понятно, кто какого уровня
+    const showRanks = this.phase === 'matchEnd' || this.phase === 'vote';
     const pl: PublicPlayer[] = this.players.map((p) => ({
       i: p.id,
       n: p.name,
@@ -1879,6 +1883,7 @@ export class Room {
       c: p.isBot || !!p.conn,
       bomb: p.hasBomb && (forTeam === TEAM_T || forTeam === -2),
       kit: p.hasKit && (forTeam === p.team || forTeam === -2),
+      ...(showRanks && !p.isBot && p.accountId && this.rankOf ? (({ r, c }) => ({ rk: r, rc: c }))(this.rankOf(p.accountId)) : {}),
     }));
     return {
       t: 'st',

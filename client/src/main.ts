@@ -3,8 +3,8 @@
 
 import './style.css';
 import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
-import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type QueueState, type RankedMode, type Settings } from './api';
-import type { GameMode } from '../../shared/src/index';
+import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type QueueState, type RankedMode, type Settings, type TopRow } from './api';
+import { mmLevel, WM_RANKS, type GameMode } from '../../shared/src/index';
 import { Game } from './game/game';
 import { AgentView, renderMenuBackground } from './ui/agentView';
 import { loadGunModels } from './game/weaponModels';
@@ -285,10 +285,62 @@ function statBars(def: WeaponDef): HTMLElement {
   return box;
 }
 
+/** Таблица лидеров: топ-50 по рейтингу матчмейкинга или союзников, своё место — внизу, если вне топа. */
+function renderTop(panel: HTMLElement, mode: RankedMode = 'mm') {
+  panel.innerHTML = '';
+  const tabs = h('div', { class: 'top-tabs' });
+  for (const [m, label] of [
+    ['mm', 'Матчмейкинг'],
+    ['wm', 'Союзники'],
+  ] as const) {
+    const b = h('button', { class: 'btn small' + (m === mode ? ' active' : '') }, label);
+    b.onclick = () => renderTop(panel, m);
+    tabs.append(b);
+  }
+  const list = h('div', { class: 'top-list' }, h('p', { class: 'hint' }, 'Загрузка…'));
+  panel.append(h('div', { class: 'panel-title' }, 'РЕЙТИНГ · ТОП-50'), tabs, list);
+  void api
+    .top(mode)
+    .then((r) => {
+      list.innerHTML = '';
+      if (!r.list.length) {
+        list.append(h('p', { class: 'hint' }, mode === 'mm' ? 'Пока никто не сыграл матч в матчмейкинге.' : 'Пока ни у кого нет звания: оно выдаётся после 5 матчей в союзниках.'));
+        return;
+      }
+      const row = (t: TopRow, me: boolean) => {
+        const lv = t.elo !== undefined ? mmLevel(t.elo) : null;
+        const badge = h('span', { class: 'lvl' }, lv ? String(lv.level) : '★');
+        if (lv) badge.style.borderColor = badge.style.color = lv.color;
+        const value = lv ? `${t.elo} Elo` : t.rank !== undefined && t.rank !== null ? WM_RANKS[t.rank].name : '???';
+        const wr = t.matches ? Math.round((t.wins / t.matches) * 100) + '%' : '—';
+        return h(
+          'div',
+          { class: 'top-row' + (me ? ' me' : '') + (t.place <= 3 ? ' podium p' + t.place : '') },
+          h('span', { class: 'top-place' }, String(t.place)),
+          h('span', { class: 'top-name' }, badge, t.login),
+          h('span', { class: 'top-value' }, value),
+          h('span', { class: 'top-wr', title: `матчей ${t.matches}, побед ${t.wins}` }, wr),
+        );
+      };
+      list.append(h('div', { class: 'top-row head' }, h('span', {}, '#'), h('span', {}, 'Игрок'), h('span', {}, mode === 'mm' ? 'Elo' : 'Звание'), h('span', {}, 'Побед')));
+      for (const t of r.list) list.append(row(t, t.login === account?.login));
+      if (r.me && r.me.place > r.list.length) list.append(h('div', { class: 'top-gap' }, '…'), row(r.me, true));
+      if (!r.me) list.append(h('p', { class: 'hint' }, mode === 'mm' ? 'Сыграйте матч в матчмейкинге, чтобы попасть в рейтинг.' : 'Сыграйте 5 матчей в союзниках, чтобы получить звание и попасть в рейтинг.'));
+      list.append(h('p', { class: 'hint top-total' }, `Всего в рейтинге: ${r.total}`));
+    })
+    .catch(() => {
+      list.innerHTML = '';
+      list.append(h('p', { class: 'hint' }, 'Не удалось загрузить рейтинг'));
+    });
+}
+
 function renderStats(body: HTMLElement) {
   const panel = h('div', { class: 'panel stats-panel' });
   panel.append(h('div', { class: 'panel-title' }, 'СТАТИСТИКА'), h('p', { class: 'hint' }, 'Загрузка…'));
-  body.append(panel);
+  // справа от своей статистики — рейтинг всех игроков
+  const top = h('div', { class: 'panel top-panel' });
+  body.append(h('div', { class: 'stats-layout' }, panel, top));
+  renderTop(top);
   void api
     .stats()
     .then(({ stats: s }) => {

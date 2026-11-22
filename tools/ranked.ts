@@ -74,7 +74,18 @@ async function main() {
 
   // 4. Доигрываем матч
   let guard = 0;
-  while (!room.closed && guard++ < 64 * 60 * 60 * 2) room.step();
+  let rkLive = false,
+    rkEnd = false;
+  while (!room.closed && guard++ < 64 * 60 * 60 * 2) {
+    room.step();
+    if (guard % 64 === 0 || room.phase === 'matchEnd') {
+      const st = room.publicState(-2);
+      const has = st.pl.some((p) => p.rk);
+      if (room.phase === 'live' && has) rkLive = true;
+      if (room.phase === 'matchEnd' && has) rkEnd = true;
+    }
+  }
+  check(!rkLive && rkEnd, 'звания в таблице скрыты во время игры и видны после конца матча');
   check(room.closed, `матч доигран и комната закрыта (счёт ${room.scores[0]}:${room.scores[1]})`);
   const ratingMsgs = ids.slice(0, 3).map((id) => inbox.get(id)!.find((m) => m.t === 'rating'));
   check(ratingMsgs.every(Boolean), 'оставшиеся игроки получили итог матча');
@@ -83,6 +94,8 @@ async function main() {
   check(leaver.matches === 1 && leaver.wins === 0 && leaver.mmr < 1000, `ушедший получил поражение (рейтинг ${leaver.mmr})`);
   check(ids.slice(0, 4).every((id) => accounts.ratings(accounts.get(id)!).wm.rank === null), 'после 1 матча звание ещё не выдано (калибровка)');
   check(inbox.get(ids[0])!.some((m) => m.t === 'kick' && m.end), 'игроков вернуло в меню');
+  const top = accounts.top('wm', 50);
+  check(top.list.length === 0, 'до 5 матчей союзников никого нет в рейтинге союзников');
   rm.step();
   check(rm.rooms.size === 0 && rm.queueState(ids[0]).state === 'idle', 'закрытая комната удалена, можно искать снова');
 

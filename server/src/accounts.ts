@@ -48,6 +48,16 @@ export function emptyStats(): PlayerStats {
   return { kills: 0, deaths: 0, headshots: 0, damage: 0, shots: 0, hits: 0, mvps: 0, rounds: 0, roundsWon: 0, matches: 0, matchesWon: 0, playSeconds: 0, weapons: {} };
 }
 
+/** Строка таблицы лидеров: место, ник, Elo (матчмейкинг) или звание 0–11 (союзники), матчи и победы. */
+export interface TopRow {
+  place: number;
+  login: string;
+  elo?: number;
+  rank?: number | null;
+  matches: number;
+  wins: number;
+}
+
 export interface Account {
   id: string;
   login: string;
@@ -320,8 +330,35 @@ export class AccountStore {
     return r;
   }
 
+  /**
+   * Топ игроков по рейтингу (только сыгравшие хотя бы один рейтинговый матч, без забаненных).
+   * Матчмейкинг — по Elo, союзники — по званию, при равном — по скрытому рейтингу.
+   * Список считается не чаще раза в 15 с на режим.
+   */
+  top(mode: 'mm' | 'wm', limit = 50): { list: TopRow[]; ranked: Account[] } {
+    const now = Date.now();
+    const c = this.topCache[mode];
+    if (c && now - c.at < 15000) return { list: c.list.slice(0, limit), ranked: c.ranked };
+    const ranked = this.db.accounts
+      .filter((a) => !a.banned && a.ratings && (mode === 'mm' ? a.ratings.mm.matches > 0 : a.ratings.wm.rank !== null))
+      .sort((a, b) =>
+        mode === 'mm' ? b.ratings!.mm.elo - a.ratings!.mm.elo : b.ratings!.wm.rank! - a.ratings!.wm.rank! || b.ratings!.wm.mmr - a.ratings!.wm.mmr,
+      );
+    const list = ranked.slice(0, 100).map((a, i) => this.topRow(a, i + 1, mode));
+    this.topCache[mode] = { at: now, list, ranked };
+    return { list: list.slice(0, limit), ranked };
+  }
+  private topCache: Record<'mm' | 'wm', { at: number; list: TopRow[]; ranked: Account[] } | null> = { mm: null, wm: null };
+
+  topRow(a: Account, place: number, mode: 'mm' | 'wm'): TopRow {
+    const r = this.ratings(a);
+    const s = mode === 'mm' ? r.mm : r.wm;
+    return { place, login: a.login, elo: mode === 'mm' ? r.mm.elo : undefined, rank: mode === 'wm' ? r.wm.rank : undefined, matches: s.matches, wins: s.wins };
+  }
+
   /** Рейтинги изменились — сохранить. */
   touch() {
+    this.topCache = { mm: null, wm: null };
     this.save();
   }
 

@@ -238,6 +238,13 @@ const server = createServer(async (req, res) => {
     if (!acc) return json(res, 401, { error: 'Нужно войти' });
     if (path === '/api/me' && req.method === 'GET') return json(res, 200, { account: publicAccount(acc) });
     if (path === '/api/stats' && req.method === 'GET') return json(res, 200, { stats: acc.stats ?? emptyStats() });
+    // таблица лидеров: топ-50 и своё место (если вне топа — отдельной строкой)
+    if (path === '/api/top' && req.method === 'GET') {
+      const mode = url.searchParams.get('mode') === 'wm' ? 'wm' : 'mm';
+      const { list, ranked } = accounts.top(mode, 50);
+      const idx = ranked.indexOf(acc);
+      return json(res, 200, { mode, list, me: idx >= 0 ? accounts.topRow(acc, idx + 1, mode) : null, total: ranked.length });
+    }
     // Поиск рейтингового матча: встать в очередь, узнать состояние (клиент спрашивает каждые 2 с), выйти
     if (path === '/api/queue') {
       if (req.method === 'POST') {

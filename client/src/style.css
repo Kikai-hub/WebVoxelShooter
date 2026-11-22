@@ -1384,3 +1384,123 @@ input {
 .kf-icon.kf-explode {
   filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) sepia(1) saturate(4) hue-rotate(-30deg);
 }
+
+/* ---------- Статистика и таблица лидеров рядом ---------- */
+.stats-layout {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 20px;
+  justify-content: center;
+  align-items: flex-start;
+  min-height: 0;
+  max-height: 100%;
+}
+.stats-layout .stats-panel {
+  width: min(760px, 60vw);
+  margin: 0;
+}
+.top-panel {
+  width: 380px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.top-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.top-tabs .btn.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.top-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 132px 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.top-row.head {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.top-row.me {
+  background: rgba(246, 196, 92, 0.14);
+  outline: 1px solid rgba(246, 196, 92, 0.5);
+}
+.top-row.podium .top-place {
+  font-weight: 700;
+}
+.top-row.p1 .top-place {
+  color: #f6c45c;
+}
+.top-row.p2 .top-place {
+  color: #d0d4da;
+}
+.top-row.p3 .top-place {
+  color: #d08a4a;
+}
+.top-place {
+  color: var(--muted);
+  text-align: right;
+}
+.top-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.top-name .lvl {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid #8fb4ff;
+  color: #8fb4ff;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+}
+.top-value {
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.top-wr {
+  text-align: right;
+  color: var(--muted);
+}
+.top-gap {
+  text-align: center;
+  color: var(--muted);
+}
+.top-total {
+  margin-top: 8px;
+}
+.rank-line {
+  white-space: nowrap;
+}
+.board-rank {
+  white-space: nowrap;
+  font-weight: 600;
+}
+@media (max-width: 900px) {
+  .stats-layout {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .stats-layout .stats-panel,
+  .top-panel {
+    width: auto;
+    max-height: none;
+  }
+}

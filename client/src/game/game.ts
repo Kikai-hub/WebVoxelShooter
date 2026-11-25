@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import {
   BTN_BACK,
   BTN_CROUCH,
+  BTN_WALK,
+  BTN_ALT_FIRE,
   BTN_FIRE,
   BTN_FWD,
   BTN_JUMP,
@@ -79,6 +81,7 @@ import { getToken } from '../api';
 import { Sfx } from './audio';
 import { Debris } from './debris';
 import { ImpactMarks, Tracers } from './effects';
+import { BloodDecals } from './decals';
 import { Hud, TEAM_LABEL, slotList } from './hud';
 import { AgentAnimator } from './animator';
 import { applyFore } from './weaponModels';
@@ -125,6 +128,9 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + d * t;
 }
 
+/** Высота раны над ногами по части тела (голова, торс, руки, ноги), м */
+const WOUND_HEIGHT = [1.65, 1.15, 1.2, 1.2, 0.45, 0.45];
+
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
@@ -137,6 +143,9 @@ export class Game {
   private impacts = new ImpactMarks();
   /** копоть от взрывов: полупрозрачные пятна */
   private scorch = new ImpactMarks(160, 0x140e0a, 0.55);
+  private blood: BloodDecals;
+  /** направление последней пули (для брызг крови на стене за целью) */
+  private lastShot: { d: [number, number, number]; at: number } | null = null;
   private sfx = new Sfx();
   private hud: Hud;
   private ws: WebSocket | null = null;
@@ -189,6 +198,10 @@ export class Game {
   private fireTap = false;
   private mouseDown = false;
   private rightDown = false;
+  /** ПКМ зажата с гранатой в руках (слабый бросок); не включает прицел */
+  private altDown = false;
+  /** кнопки броска, зажатые с момента выдернутой чеки (предсказание своего броска) */
+  private nadeHoldC = 0;
   private yaw = 0;
   private pitch = 0;
   private slot = SLOT_PISTOL;
@@ -258,8 +271,15 @@ export class Game {
     this.mapRenderer = new MapRenderer(this.info.map);
     this.scene.add(this.mapRenderer.group);
     this.debris = new Debris(this.info.map, 2000);
-    this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh, this.scorch.mesh);
-    this.nadeView = new NadeView(() => this.info.map);
+    this.blood = new BloodDecals(() => this.info.map);
+    this.scene.add(this.debris.mesh, this.tracers.lines, this.impacts.mesh, this.scorch.mesh, this.blood.mesh);
+    this.nadeView = new NadeView(
+      () => this.info.map,
+      (x, y, z, speed) => {
+        const c = this.cameraPos();
+        this.sfx.nadeBounce(Math.hypot(x - c.x, y - c.y, z - c.z), this.panOf(x, z), speed);
+      },
+    );
     this.scene.add(this.nadeView.group, this.smokeView.mesh, this.fireView.mesh, this.dropsView.group);
 
     this.bombMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.18, 0.26), new THREE.MeshLambertMaterial({ color: 0x3b3f2a }));
@@ -275,7 +295,7 @@ export class Game {
     this.vm = new ViewModel(account.loadout.skin);
     this.hud = new Hud(this.wrap, this.info);
     this.hud.preferred = { primary: account.loadout.primary[0], pistol: account.loadout.pistol[0] };
-    this.hud.onChat = (t) => this.sendJson({ t: 'chat', text: t });
+    this.hud.onChat = (t, team) => this.sendJson({ t: 'chat', text: t, team });
     this.hud.onBuy = (k) => this.sendJson({ t: 'buy', item: k });
     this.hud.onSell = (k) => this.sendJson({ t: 'sell', item: k });
     this.hud.onChatClose = () => this.lock();
@@ -325,6 +345,7 @@ export class Game {
     this.dropsView.clear();
     this.impacts.clear();
     this.scorch.clear();
+    this.blood.clear();
     this.hud.setMap(this.info);
     this.hud.info(`Карта: ${this.info.name}`);
   }
@@ -390,7 +411,7 @@ export class Game {
     const el = this.pauseEl?.querySelector(".pause-hint");
     if (!el) return;
     const k = (a: Action) => this.binds[a].map(keyLabel).join("/") || "—";
-    el.textContent = `${k("forward")} ${k("left")} ${k("back")} ${k("right")} — ход · ${k("jump")} — прыжок · ${k("crouch")} — присесть · ${k("use")} — заложить/обезвредить/подобрать · ${k("reload")} — перезарядка · ${k("primary")}/${k("pistol")}/${k("knife")}, ${k("lastWeapon")} — оружие · ${k("grenade")} — гранаты · ${k("drop")} — выбросить · ${k("buy")} — покупка · ${k("team")} — команда · ${k("scoreboard")} — счёт · ${k("chat")} — чат · ПКМ — прицел снайперки. Клавиши меняются в главном меню: Настройки → Управление.`;
+    el.textContent = `${k("forward")} ${k("left")} ${k("back")} ${k("right")} — ход · ${k("jump")} — прыжок · ${k("crouch")} — присесть · ${k("walk")} — тихая ходьба · ${k("use")} — заложить/обезвредить/подобрать · ${k("reload")} — перезарядка · ${k("primary")}/${k("pistol")}/${k("knife")}, ${k("lastWeapon")} — оружие · ${k("grenade")} — гранаты · ${k("drop")} — выбросить · ${k("buy")} — покупка · ${k("team")} — команда · ${k("scoreboard")} — счёт · ${k("chat")} — чат · ПКМ — прицел снайперки · граната: ЛКМ — далеко, ПКМ — под ноги, обе — средне, бросок по отпусканию кнопки. Клавиши меняются в главном меню: Настройки → Управление.`;
   }
 
   private buildPause() {
@@ -629,6 +650,7 @@ export class Game {
     this.debris.clear();
     this.impacts.clear();
     this.scorch.clear();
+    this.blood.clear();
     this.nadeView.clear();
     this.smokeView.clear();
     this.fireView.clear();
@@ -706,6 +728,10 @@ export class Game {
           az = e.a[2] - Math.sin(yaw) * 0.12;
         this.tracers.add(ax, e.a[1] - 0.15, az, e.b[0], e.b[1], e.b[2], isBot);
         if (e.h === 1) this.markImpact(e.a, e.b);
+        {
+          const sl = Math.hypot(e.b[0] - e.a[0], e.b[1] - e.a[1], e.b[2] - e.a[2]) || 1;
+          this.lastShot = { d: [(e.b[0] - e.a[0]) / sl, (e.b[1] - e.a[1]) / sl, (e.b[2] - e.a[2]) / sl], at: performance.now() };
+        }
         const d = Math.hypot(e.a[0] - eye.x, e.a[1] - eye.y, e.a[2] - eye.z);
         const w = WEAPONS[this.pub(e.s)?.w ?? 1];
         this.sfx.shot(w?.kind ?? 'rifle', d, this.panOf(e.a[0], e.a[2]), w?.key);
@@ -715,11 +741,19 @@ export class Game {
         const p = this.getPlayer(e.v);
         const body = this.ensureBody(p);
         body?.wound(e.p, e.x, e.y, e.z, e.r, e.x2 === 1, this.debris, this.settings.blood);
+        // кровь на карте: пятно на стене за целью (по пуле, если она только что была) или на полу
+        if (e.x2 !== 1) {
+          const bp = e.v === this.myId ? ([this.pred.x, this.pred.y, this.pred.z] as const) : p.renderPos;
+          const sh = this.lastShot && performance.now() - this.lastShot.at < 250 ? this.lastShot.d : null;
+          this.blood.wound(bp[0], bp[1] + (WOUND_HEIGHT[e.p] ?? 1.1), bp[2], sh?.[0] ?? 0, sh?.[1] ?? 0, sh?.[2] ?? 0, this.settings.blood === 'confetti', performance.now() / 1000);
+        }
         break;
       }
       case 'kill': {
         const p = this.getPlayer(e.v);
         p.dead = true;
+        // убийство ножом слышно всем рядом (свой удар уже озвучен по событию hurt)
+        if (WEAPONS[e.w]?.kind === 'knife' && e.k !== this.myId) this.sfx.knifeHit(Math.hypot(e.at[0] - eye.x, e.at[1] - eye.y, e.at[2] - eye.z), this.panOf(e.at[0], e.at[2]));
         // состояние комнаты придёт позже (4 раза в секунду) — отмечаем смерть сразу
         if (this.st?.pl[e.v]) this.st.pl[e.v].a = false;
         const body = this.ensureBody(p);
@@ -751,6 +785,7 @@ export class Game {
           body.setWeapon('none');
           if (e.ex) body.explodeHead(this.debris, e.d, this.settings.blood);
         }
+        this.blood.pooled(e.at[0], e.at[1], e.at[2], this.settings.blood === 'confetti', performance.now() / 1000);
         const k = this.pub(e.k),
           v = this.pub(e.v);
         const wd = k ? WEAPONS[e.w] : null;
@@ -782,6 +817,7 @@ export class Game {
           if (Math.hypot(dx, dz) < 0.6) {
             this.hud.hitMarker(now);
             this.sfx.hit(false);
+            if (this.own && WEAPONS[this.own.weapon]?.kind === 'knife') this.sfx.knifeHit();
           }
         }
         break;
@@ -801,6 +837,7 @@ export class Game {
         break;
       }
       case 'roundStart':
+        this.blood.clear();
         this.faceSpawnDirection();
         this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         this.buyOpen = false;
@@ -812,12 +849,16 @@ export class Game {
           this.hud.showCenter(title, ot && swapsSidesBefore(e.rn, hl) ? `До ${winTarget(e.rn, hl)} побед · у всех $${OT_MONEY}` : 'Заморозка: покупка на B', 3, now, ot ? 'warn' : '');
         }
         this.specTarget = -1;
+        // первый раунд — начало матча, остальные — обычный сигнал
+        this.sfx.roundSound(e.rn === 1 ? 'match_start' : 'round_start');
         break;
       case 'roundEnd':
         {
           const mvp = e.mvp !== undefined && e.mvp >= 0 ? this.pub(e.mvp) : undefined;
           this.hud.showCenter(`Победа: ${TEAM_LABEL[e.w]}`, e.why + (mvp ? ` · MVP: ${mvp.n}` : ""), 5, now, e.w === this.myTeam ? "win" : "lose");
           if (e.mvp === this.myId && this.myId >= 0) this.hud.info("Вы — MVP раунда!");
+          this.sfx.roundSound(e.w === 0 ? 't_win' : 'ct_win');
+          if (e.mvp === this.myId && this.myId >= 0) setTimeout(() => this.sfx.roundSound('mvp'), 1500);
         }
         break;
       case 'matchEnd':
@@ -829,7 +870,7 @@ export class Game {
         this.hud.info('Смена сторон');
         break;
       case 'chat':
-        this.hud.chat(e.n, e.t, e.text, e.dead);
+        this.hud.chat(e.n, e.t, e.text, e.dead, e.tm);
         break;
       case 'info':
         this.hud.info(e.text);
@@ -837,7 +878,7 @@ export class Game {
       case 'nade': {
         const ahead = Math.max(0, Math.round(this.latestTick - e.tick));
         this.nadeView.spawn(e.id, e.type, e.p, e.v, ahead);
-        if (e.s !== this.myId) this.sfx.click(260, 0.06, 0.12);
+        if (e.s !== this.myId) this.sfx.nadeThrow(Math.hypot(e.p[0] - eye.x, e.p[1] - eye.y, e.p[2] - eye.z), this.panOf(e.p[0], e.p[2]), false);
         break;
       }
       case 'boom': {
@@ -845,7 +886,7 @@ export class Game {
         const [x, y, z] = e.p;
         const d = Math.hypot(x - eye.x, y - eye.y, z - eye.z);
         if (e.type === 0) {
-          this.sfx.grenade(d);
+          this.sfx.grenade(d, this.panOf(x, z));
           for (let i = 0; i < 70; i++) {
             const c = [0xffb03a, 0xff6a1a, 0x5a5048, 0x3a332c][i % 4];
             this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 12, Math.random() * 9, (Math.random() - 0.5) * 12, c, 1 + Math.random() * 2, 1.8);
@@ -928,10 +969,16 @@ export class Game {
         if (e.s === this.myId) this.sfx.click(700, 0.05, 0.2);
         break;
       case 'reload':
-        if (e.s === this.myId || (!this.predAlive && e.s === this.specTarget)) {
+        {
+          const own = e.s === this.myId || (!this.predAlive && e.s === this.specTarget);
           const w = WEAPONS[e.s === this.myId ? (this.own?.weapon ?? 1) : (this.players.get(e.s)?.snaps.at(-1)?.weapon ?? 1)];
-          this.vm.reload(w?.reload ?? 2);
-          this.sfx.click(400, 0.06, 0.15);
+          if (own) this.vm.reload(w?.reload ?? 2);
+          if (w && w.kind !== 'grenade' && w.kind !== 'knife') {
+            // свой — громко и без панорамы, чужие — по расстоянию и панораме, как выстрел
+            const rp = this.players.get(e.s)?.renderPos;
+            const d = own || !rp ? 0 : Math.hypot(rp[0] - eye.x, rp[1] + 1 - eye.y, rp[2] - eye.z);
+            this.sfx.reload(w.kind, w.key, w.reload, d, rp && !own ? this.panOf(rp[0], rp[2]) : 0, own);
+          }
         }
         break;
     }
@@ -1068,6 +1115,7 @@ export class Game {
     this.keys.clear();
     this.mouseDown = false;
     this.rightDown = false;
+    this.altDown = false;
     this.pauseEl.style.display = this.hud.chatOpen || this.buyOpen || this.teamMenuOpen ? 'none' : 'flex';
   }
 
@@ -1082,6 +1130,7 @@ export class Game {
       this.keys.clear();
       this.mouseDown = false;
       this.rightDown = false;
+      this.altDown = false;
     }
   };
 
@@ -1118,6 +1167,7 @@ export class Game {
   private onBlur = () => {
     this.keys.clear();
     this.mouseDown = false;
+    this.altDown = false;
   };
 
   private onMouseMove = (e: MouseEvent) => {
@@ -1141,10 +1191,15 @@ export class Game {
       this.fireTap = true;
       if (!this.predAlive) this.cycleSpectate();
     }
-    if (e.button === 2) this.rightDown = !this.rightDown;
+    if (e.button === 2) {
+      // с гранатой ПКМ — слабый бросок, прицел снайперки не трогаем
+      if (this.slot >= 3) this.altDown = true;
+      else this.rightDown = !this.rightDown;
+    }
   };
   private onMouseUp = (e: MouseEvent) => {
     if (e.button === 0) this.mouseDown = false;
+    if (e.button === 2) this.altDown = false;
   };
 
   private onKeyDown = (e: KeyboardEvent) => {
@@ -1160,6 +1215,12 @@ export class Game {
     if (this.bound(code, 'chat')) {
       e.preventDefault();
       this.hud.openChat();
+      if (this.realLocked()) document.exitPointerLock();
+      return;
+    }
+    if (this.bound(code, 'teamChat')) {
+      e.preventDefault();
+      this.hud.openChat(this.myTeam >= 0);
       if (this.realLocked()) document.exitPointerLock();
       return;
     }
@@ -1385,10 +1446,12 @@ export class Game {
     if (this.held('right')) b |= BTN_RIGHT;
     if (this.held('jump')) b |= BTN_JUMP;
     if (this.held('crouch')) b |= BTN_CROUCH;
+    if (this.held('walk')) b |= BTN_WALK;
     if (this.held('use')) b |= BTN_USE;
     if (this.held('reload')) b |= BTN_RELOAD;
     if (this.held('drop')) b |= BTN_DROP;
     if (this.mouseDown || this.fireTap) b |= BTN_FIRE;
+    if (this.altDown && this.slot >= 3) b |= BTN_ALT_FIRE;
     return b;
   }
 
@@ -1428,23 +1491,41 @@ export class Game {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && !this.spectator) this.ws.send(encodeCmds(this.sentCmds));
   }
 
+  /** Граната: чека выдёргивается при нажатии, бросок — при отпускании (как на сервере). */
+  private predictNade(cmd: UserCmd) {
+    const down = cmd.buttons & (BTN_FIRE | BTN_ALT_FIRE);
+    if (!this.canMove || cmd.buttons & BTN_USE || this.slot < 3) {
+      this.nadeHoldC = 0;
+      return;
+    }
+    if (down) {
+      if (this.nadeHoldC || this.simTime >= this.localNextFire) {
+        if (!this.nadeHoldC) this.sfx.nadePin();
+        this.nadeHoldC |= down;
+      }
+    } else if (this.nadeHoldC) {
+      this.nadeHoldC = 0;
+      this.localNextFire = this.simTime + 0.8;
+      this.vm.fire();
+      this.sfx.nadeThrow();
+      const t = this.slot - 3;
+      this.nades[t] = Math.max(0, this.nades[t] - 1);
+      if (this.nades[t] === 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
+    }
+  }
+
   /** Мгновенный отклик на выстрел: вспышка, звук, трассер (сервер решает попадание). */
   private predictFire(cmd: UserCmd) {
     const own = this.own;
+    if (own && WEAPONS[own.weapon]?.kind === 'grenade') {
+      this.predictNade(cmd);
+      return;
+    }
+    this.nadeHoldC = 0;
     if (!own || !(cmd.buttons & BTN_FIRE) || !this.canMove || cmd.buttons & BTN_USE) return;
     const def = WEAPONS[own.weapon];
     if (!def || own.flags & SF_RELOADING) return;
     if (this.simTime < this.localNextFire) return;
-    if (def.kind === 'grenade') {
-      if (this.lastButtons & BTN_FIRE || this.slot < 3) return;
-      this.localNextFire = this.simTime + 0.8;
-      this.vm.fire();
-      this.sfx.click(300, 0.06, 0.15);
-      const t = this.slot - 3;
-      this.nades[t] = Math.max(0, this.nades[t] - 1);
-      if (this.nades[t] === 0) this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
-      return;
-    }
     if (!def.auto && this.lastButtons & BTN_FIRE) return;
     if (def.kind !== 'knife' && own.mag <= 0) return;
     if (this.slot !== def.slot) return;
@@ -1561,6 +1642,7 @@ export class Game {
     this.debris.update(dt);
     this.mapRenderer.flush();
     this.nadeView.update(dt);
+    this.blood.update(performance.now() / 1000);
     this.smokeView.update(now);
     this.fireView.update(now);
     this.dropsView.sync(this.st?.drops ?? [], now);

@@ -484,7 +484,7 @@ function onSocket(ws: WebSocket, ip: string) {
         if (conn.slot >= 0 && typeof msg.item === 'string') room.buy(room.players[conn.slot], msg.item);
         break;
       case 'chat':
-        if (typeof msg.text === 'string') room.chat(conn, msg.text);
+        if (typeof msg.text === 'string') room.chat(conn, msg.text, msg.team === true);
         break;
       case 'vote':
         if (typeof msg.map === 'string') room.vote(conn, msg.map);

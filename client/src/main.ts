@@ -2,7 +2,7 @@
 // Раскладка по мотиву меню тактических шутеров, графика — своя, воксельная.
 
 import './style.css';
-import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
+import { ACTIONS, AGENTS, SKINS, SLOT_PISTOL, SLOT_PRIMARY, WEAPONS, damageAt, defaultBinds, keyLabel, sanitizeBinds, type Action, type WeaponDef } from '../../shared/src/index';
 import { ApiError, api, getToken, setToken, type AccountInfo, type Loadout, type PartyState, type QueueState, type RankedMode, type Settings, type TopRow } from './api';
 import { mmLevel, WM_RANKS, CROSSHAIR_STYLES, CROSSHAIR_STYLE_NAMES, DEFAULT_CROSSHAIR, drawCrosshair, sanitizeCrosshair, type GameMode } from '../../shared/src/index';
 import { Game } from './game/game';
@@ -290,6 +290,12 @@ function statBars(def: WeaponDef): HTMLElement {
     ['Отдача', Math.min(1, def.recoilMax / 0.08), def.recoilMax <= 0.05 ? 'низкая' : 'высокая'],
     ['Точность', Math.max(0.05, 1 - def.spread / 0.07), def.spread < 0.005 ? 'высокая' : 'средняя'],
     ['Подвижность', def.speed, Math.round(def.speed * 100) + '%'],
+    ...(def.kind === 'knife' || def.kind === 'grenade'
+      ? []
+      : ([['Урон на 10 м', 10], ['Урон на 30 м', 30], ['Урон на 50 м', 50]] as const).map(([label, d]): [string, number, string] => {
+          const dmg = damageAt(def, d);
+          return [label, Math.min(1, (dmg * def.pellets) / 160), Math.round(dmg) + (def.pellets > 1 ? ' × ' + def.pellets : '')];
+        })),
   ];
   for (const [label, k, val] of rows) {
     box.append(h('div', { class: 'stat' }, h('span', {}, label), h('div', { class: 'bar' }, Object.assign(h('i'), { style: `width:${Math.round(k * 100)}%` } as any)), h('em', {}, val)));

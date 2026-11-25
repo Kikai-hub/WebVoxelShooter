@@ -96,7 +96,11 @@ export class NadeView {
   private flying = new Map<number, { st: NadeState; mesh: THREE.Mesh; acc: number }>();
   private geo = new THREE.BoxGeometry(0.1, 0.13, 0.1);
 
-  constructor(private map: () => VoxelMap) {}
+  /** onBounce — граната ударилась о поверхность (x, y, z, скорость удара); звук играет клиент по своей симуляции */
+  constructor(
+    private map: () => VoxelMap,
+    private onBounce?: (x: number, y: number, z: number, speed: number) => void,
+  ) {}
 
   spawn(id: number, type: number, p: [number, number, number], v: [number, number, number], ticksAhead: number) {
     const mesh = new THREE.Mesh(this.geo, new THREE.MeshLambertMaterial({ color: NADE_COLORS[type] ?? 0x666666 }));
@@ -120,7 +124,8 @@ export class NadeView {
       f.acc += dt;
       while (f.acc >= DT) {
         f.acc -= DT;
-        stepNade(f.st, this.map());
+        const hit = stepNade(f.st, this.map());
+        if (hit > 0) this.onBounce?.(f.st.x, f.st.y, f.st.z, hit);
       }
       f.mesh.position.set(f.st.x, f.st.y, f.st.z);
       if (!f.st.resting) {

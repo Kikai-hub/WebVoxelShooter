@@ -22,6 +22,9 @@ export const ACTIONS = [
   { id: 'team', label: 'Сменить команду', keys: ['KeyM'] },
   { id: 'scoreboard', label: 'Таблица счёта', keys: ['Tab'] },
   { id: 'chat', label: 'Чат', keys: ['Enter', 'KeyT'] },
+  { id: 'teamChat', label: 'Командный чат', keys: ['KeyU'] },
+  // в конце: у старых аккаунтов Shift мог быть занят другим действием — оно сохраняет клавишу
+  { id: 'walk', label: 'Тихая ходьба', keys: ['ShiftLeft'] },
 ] as const;
 
 export type Action = (typeof ACTIONS)[number]['id'];

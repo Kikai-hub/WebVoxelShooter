@@ -4,6 +4,8 @@ import {
   AIR_ACCEL,
   BTN_BACK,
   BTN_CROUCH,
+  BTN_WALK,
+  WALK_SPEED,
   BTN_FWD,
   BTN_JUMP,
   BTN_LEFT,
@@ -87,7 +89,11 @@ export function stepPlayer(s: PState, buttons: number, yaw: number, map: VoxelMa
   if (buttons & BTN_CROUCH) s.crouch = true;
   else if (s.crouch && !boxCollides(map, s.x, s.y, s.z, PLAYER_HEIGHT)) s.crouch = false;
   const h = s.crouch ? CROUCH_HEIGHT : PLAYER_HEIGHT;
-  const maxSpeed = (s.crouch ? CROUCH_SPEED : RUN_SPEED) * speedMul;
+  // присед + ходьба — берём меньшую из скоростей
+  let base = RUN_SPEED;
+  if (buttons & BTN_WALK) base = WALK_SPEED;
+  if (s.crouch) base = Math.min(base, CROUCH_SPEED);
+  const maxSpeed = base * speedMul;
 
   const sy = Math.sin(yaw),
     cy = Math.cos(yaw);

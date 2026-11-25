@@ -1,7 +1,7 @@
 // Полёт гранаты: одна функция для сервера (авторитет) и клиента (отрисовка).
 // Отскоки от вокселей с потерей скорости, качение по полу с трением.
 
-import { DT, NADE_GRAVITY, NADE_THROW_SPEED, SMOKE_RADIUS } from './constants';
+import { DT, NADE_BOUNCE_MIN, NADE_GRAVITY, NADE_THROW_SPEED, SMOKE_RADIUS } from './constants';
 import { VOXEL, VoxelMap } from './map';
 
 export interface NadeState {
@@ -20,8 +20,20 @@ function solid(map: VoxelMap, x: number, y: number, z: number): boolean {
   return map.get(Math.floor(x / VOXEL), Math.floor(y / VOXEL), Math.floor(z / VOXEL)) !== 0;
 }
 
-/** Начальное состояние броска из глаз игрока по направлению взгляда (с подбросом вверх). */
-export function throwNade(ex: number, ey: number, ez: number, yaw: number, pitch: number, pvx: number, pvz: number): NadeState {
+/** Сила броска как в CS: ЛКМ — 1.0 (далеко), ЛКМ+ПКМ — 0.5, ПКМ — 0.3 (под ноги). */
+export const THROW_STRONG = 1;
+export const THROW_MEDIUM = 0.5;
+export const THROW_SOFT = 0.3;
+
+/** Доля скорости игрока, добавляемая к скорости гранаты (бросок «с разбега», в прыжке — выше). */
+const INHERIT = 1;
+
+/**
+ * Начальное состояние броска из глаз игрока по направлению взгляда (с подбросом вверх).
+ * strength 0..1: скорость = NADE_THROW_SPEED × (0.3 + 0.7 × strength); pvx/pvy/pvz — скорость игрока.
+ */
+export function throwNade(ex: number, ey: number, ez: number, yaw: number, pitch: number, pvx: number, pvz: number, strength = THROW_STRONG, pvy = 0): NadeState {
+  const speed = NADE_THROW_SPEED * (0.3 + 0.7 * Math.max(0, Math.min(1, strength)));
   const p = Math.min(1.4, pitch + 0.12); // бросок чуть выше прицела
   const cp = Math.cos(p);
   const dx = -Math.sin(yaw) * cp,
@@ -31,30 +43,37 @@ export function throwNade(ex: number, ey: number, ez: number, yaw: number, pitch
     x: ex + dx * 0.3,
     y: ey - 0.1,
     z: ez + dz * 0.3,
-    vx: dx * NADE_THROW_SPEED + pvx * 0.6,
-    vy: dy * NADE_THROW_SPEED,
-    vz: dz * NADE_THROW_SPEED + pvz * 0.6,
+    vx: dx * speed + pvx * INHERIT,
+    vy: dy * speed + pvy * INHERIT,
+    vz: dz * speed + pvz * INHERIT,
     resting: false,
   };
 }
 
-/** Один тик полёта (1/64 с). */
-export function stepNade(n: NadeState, map: VoxelMap): void {
-  if (n.resting) return;
+/**
+ * Один тик полёта (1/64 с). Возвращает скорость удара о поверхность, м/с, если она выше порога
+ * отскока (NADE_BOUNCE_MIN), иначе 0: по этому значению клиент играет звук отскока.
+ */
+export function stepNade(n: NadeState, map: VoxelMap): number {
+  if (n.resting) return 0;
+  let hit = 0;
   n.vy -= NADE_GRAVITY * DT;
   // по осям: при столкновении — отражение с потерей энергии
   const nx = n.x + n.vx * DT;
   if (solid(map, nx + Math.sign(n.vx) * R, n.y, n.z)) {
+    hit = Math.max(hit, Math.abs(n.vx));
     n.vx *= -0.45;
     n.vz *= 0.8;
   } else n.x = nx;
   const nz = n.z + n.vz * DT;
   if (solid(map, n.x, n.y, nz + Math.sign(n.vz) * R)) {
+    hit = Math.max(hit, Math.abs(n.vz));
     n.vz *= -0.45;
     n.vx *= 0.8;
   } else n.z = nz;
   const ny = n.y + n.vy * DT;
   if (solid(map, n.x, ny + Math.sign(n.vy) * R, n.z)) {
+    hit = Math.max(hit, Math.abs(n.vy));
     if (n.vy < 0) {
       n.y = (Math.floor((ny - R) / VOXEL) + 1) * VOXEL + R;
       n.vy = Math.abs(n.vy) > 1.5 ? -n.vy * 0.4 : 0;
@@ -66,6 +85,7 @@ export function stepNade(n: NadeState, map: VoxelMap): void {
     n.vx = n.vz = 0;
     n.resting = true;
   }
+  return hit >= NADE_BOUNCE_MIN ? hit : 0;
 }
 
 /** Пересекает ли отрезок a→b сферу дыма (с небольшим запасом по краю). */

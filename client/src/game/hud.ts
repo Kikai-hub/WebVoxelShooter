@@ -77,7 +77,8 @@ export class Hud {
   private centerUntil = 0;
   private hitUntil = 0;
   chatOpen = false;
-  onChat: ((text: string) => void) | null = null;
+  private chatTeam = false;
+  onChat: ((text: string, team: boolean) => void) | null = null;
   onBuy: ((item: string) => void) | null = null;
   onSell: ((item: string) => void) | null = null;
   onChatClose: (() => void) | null = null;
@@ -113,7 +114,7 @@ export class Hud {
       e.stopPropagation();
       if (e.key === 'Enter') {
         const t = this.chatInput.value.trim();
-        if (t) this.onChat?.(t);
+        if (t) this.onChat?.(t, this.chatTeam);
         this.closeChat();
       } else if (e.key === 'Escape') this.closeChat();
     });
@@ -376,9 +377,10 @@ export class Hud {
     setTimeout(() => row.remove(), 7000);
   }
 
-  chat(name: string, team: number, text: string, dead: boolean) {
+  chat(name: string, team: number, text: string, dead: boolean, tm = false) {
     const row = el('div', 'chatrow', this.chatLog);
     if (dead) el('span', 'dead', row, '*мёртв* ');
+    if (tm) el('span', 'team' + team, row, '(КОМАНДА) ');
     el('span', 'team' + team, row, name + ': ');
     el('span', '', row, text);
     while (this.chatLog.children.length > 8) this.chatLog.firstChild!.remove();
@@ -391,8 +393,10 @@ export class Hud {
     setTimeout(() => row.classList.add('old'), 9000);
   }
 
-  openChat() {
+  openChat(team = false) {
     this.chatOpen = true;
+    this.chatTeam = team;
+    this.chatInput.placeholder = team ? 'Сообщение команде… (Enter — отправить, Esc — закрыть)' : 'Сообщение всем… (Enter — отправить, Esc — закрыть)';
     this.chatInput.style.display = 'block';
     this.chatInput.value = '';
     this.chatLog.classList.add('open');

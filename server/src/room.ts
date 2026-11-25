@@ -5,6 +5,7 @@ import {
   ARMOR_PRICE,
   BOMB_TIMER,
   BTN_FIRE,
+  BTN_ALT_FIRE,
   BTN_DROP,
   FLASH_RANGE,
   HE_MAX_DAMAGE,
@@ -36,6 +37,9 @@ import {
   makeChip,
   stepNade,
   throwNade,
+  THROW_STRONG,
+  THROW_MEDIUM,
+  THROW_SOFT,
   type NadeState,
   type Smoke,
   BTN_RELOAD,
@@ -111,6 +115,7 @@ import {
   raycastBody,
   raycastMap,
   shotDirection,
+  damageAt,
   snapshotSize,
   stepPlayer,
   type BombStatus,
@@ -221,6 +226,8 @@ export class Player {
   reloadEnd = 0;
   recoil = 0;
   lastButtons = 0;
+  /** кнопки броска, зажатые с момента выдернутой чеки (0 — граната не наготове) */
+  nadeHold = 0;
   lastSeq = 0;
   cmdQueue: UserCmd[] = [];
   useProgress = 0;
@@ -702,14 +709,25 @@ export class Room {
     if (p.cmdQueue.length > 16) p.cmdQueue.splice(0, p.cmdQueue.length - 16);
   }
 
-  chat(conn: Conn, text: string) {
+  chat(conn: Conn, text: string, team = false) {
     const now = this.time;
     if (now - conn.lastChat < 0.7) return;
     conn.lastChat = now;
     const clean = text.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 120);
     if (!clean) return;
     const p = conn.slot >= 0 ? this.players[conn.slot] : null;
-    this.events.push({ e: 'chat', n: conn.login, t: p ? p.team : -1, text: clean, dead: !p || !p.alive });
+    const ev: GameEvent = { e: 'chat', n: conn.login, t: p ? p.team : -1, text: clean, dead: !p || !p.alive, tm: team && !!p };
+    if (!team || !p) {
+      // наблюдатель пишет только в общий чат
+      this.events.push({ ...ev, tm: false } as GameEvent);
+      return;
+    }
+    // командное сообщение — только своей стороне и наблюдателям (адресно, мимо общей очереди событий)
+    const msg: ServerMsg = { t: 'ev', e: [ev] };
+    for (const c of this.conns) {
+      const q = c.slot >= 0 ? this.players[c.slot] : null;
+      if (!q || q.team === p.team) c.sendJson(msg);
+    }
   }
 
   // ---------- Покупки ----------
@@ -1269,6 +1287,7 @@ export class Room {
     p.pitch = Math.max(-1.55, Math.min(1.55, cmd.pitch));
     if (!p.alive) {
       p.lastButtons = 0;
+      p.nadeHold = 0;
       return;
     }
     const canMove = this.phase !== 'freeze' && this.phase !== 'vote';
@@ -1300,8 +1319,23 @@ export class Room {
     if (pressed & BTN_DROP && !busy) this.dropWeapon(p, true);
     if (pressed & BTN_USE) this.tryPickup(p);
     // Бросок гранаты
-    if (def.kind === 'grenade') {
-      if (pressed & BTN_FIRE && !busy && this.phase !== 'freeze' && this.phase !== 'vote' && p.simTime >= p.nextFire) this.throwGrenade(p);
+    if (def.kind !== 'grenade') p.nadeHold = 0;
+    else {
+      const canThrow = !busy && this.phase !== 'freeze' && this.phase !== 'vote';
+      const down = cmd.buttons & (BTN_FIRE | BTN_ALT_FIRE);
+      if (p.isBot) {
+        // боты бросают сразу по нажатию, с полной силой
+        if (pressed & BTN_FIRE && canThrow && p.simTime >= p.nextFire) this.throwGrenade(p, THROW_STRONG);
+      } else if (!canThrow) p.nadeHold = 0;
+      else if (down) {
+        // граната наготове; какие кнопки держали — такая и сила
+        if (p.nadeHold || p.simTime >= p.nextFire) p.nadeHold |= down;
+      } else if (p.nadeHold) {
+        // бросок — по отпусканию
+        const hold = p.nadeHold;
+        p.nadeHold = 0;
+        this.throwGrenade(p, hold & BTN_FIRE ? (hold & BTN_ALT_FIRE ? THROW_MEDIUM : THROW_STRONG) : THROW_SOFT);
+      }
       p.lastButtons = cmd.buttons;
       return;
     }
@@ -1370,7 +1404,7 @@ export class Room {
             this.events.push({ e: 'wound', v: victim.id, p: bh.part, x: bh.ex, y: bh.ey, z: bh.ez, r: r + 1, x2: 1 });
           }
         }
-        const dmg = def.damage * PART_DAMAGE[bh.part];
+        const dmg = damageAt(def, maxT) * PART_DAMAGE[bh.part]; // падение урона с дистанцией
         hitsBy.set(victim.id, (hitsBy.get(victim.id) ?? 0) + 1);
         this.damage(victim, p, dmg, bh.part, [d[0], d[1], d[2]], def, [ex, ey, ez]);
       }
@@ -1496,17 +1530,17 @@ export class Room {
 
   // ---------- Гранаты ----------
 
-  private throwGrenade(p: Player) {
+  private throwGrenade(p: Player, strength: number) {
     const type = p.slot - SLOT_HE;
     if (p.nades[type] <= 0) return;
     p.nades[type]--;
     p.nextFire = p.simTime + 0.8;
     const [ex, ey, ez] = p.eye();
-    const st = throwNade(ex, ey, ez, p.yaw, p.pitch, p.st.vx, p.st.vz);
+    const st = throwNade(ex, ey, ez, p.yaw, p.pitch, p.st.vx, p.st.vz, strength, p.st.vy);
     const n = { id: this.nextNadeId++, owner: p.id, team: p.team, type, st, thrownAt: this.time };
     this.nadesInFlight.push(n);
     this.stats.nades[type]++;
-    this.events.push({ e: 'nade', id: n.id, s: p.id, type, tick: this.tick, p: [st.x, st.y, st.z], v: [st.vx, st.vy, st.vz] });
+    this.events.push({ e: 'nade', id: n.id, s: p.id, type, tick: this.tick, p: [st.x, st.y, st.z], v: [st.vx, st.vy, st.vz], str: strength, pv: [p.st.vx, p.st.vy, p.st.vz] });
     // после броска — снова оружие, если гранат этого типа больше нет
     if (p.nades[type] <= 0) p.slot = p.gunSlot;
     for (const q of this.players) q.bot?.hear(ex, ez, 20, p);

@@ -84,6 +84,8 @@ export const EYE_HEIGHT = 1.62;
 export const CROUCH_EYE_HEIGHT = 1.12;
 export const RUN_SPEED = 5.2;
 export const CROUCH_SPEED = 2.2;
+/** Тихая ходьба (Shift): шаги не слышны, скорость ниже порога шагов (3,5 м/с) даже с ножом */
+export const WALK_SPEED = RUN_SPEED * 0.52;
 export const GRAVITY = 20;
 export const JUMP_VELOCITY = 7.1;
 export const GROUND_ACCEL = 10;
@@ -106,10 +108,15 @@ export const BTN_FIRE = 64;
 export const BTN_USE = 128;
 export const BTN_RELOAD = 256;
 export const BTN_DROP = 512;
+export const BTN_WALK = 1024;
+/** Правая кнопка мыши с гранатой в руках: бросок послабее (как в CS). */
+export const BTN_ALT_FIRE = 2048;
 
 // Гранаты
 export const NADE_GRAVITY = 18;
 export const NADE_THROW_SPEED = 15;
+/** Минимальная скорость удара гранаты о поверхность, при которой слышен отскок, м/с */
+export const NADE_BOUNCE_MIN = 2.5;
 export const NADE_FUSE = 1.6;
 export const HE_RADIUS = 6;
 export const HE_MAX_DAMAGE = 98;

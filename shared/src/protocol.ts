@@ -269,7 +269,8 @@ export type GameEvent =
   | { e: 'roundEnd'; w: number; why: string; mvp?: number }
   | { e: 'matchEnd'; w: number }
   | { e: 'half' }
-  | { e: 'nade'; id: number; s: number; type: number; tick: number; p: [number, number, number]; v: [number, number, number] }
+  /** str — сила броска (1 / 0.5 / 0.3), pv — скорость игрока в момент броска; v — итоговая скорость гранаты (уже с ними) */
+  | { e: 'nade'; id: number; s: number; type: number; tick: number; p: [number, number, number]; v: [number, number, number]; str: number; pv: [number, number, number] }
   | { e: 'boom'; id: number; type: number; p: [number, number, number] }
   | { e: 'fire'; id: number; p: [number, number, number]; r: number; dur: number }
   | { e: 'fireOut'; id: number }
@@ -280,7 +281,7 @@ export type GameEvent =
   | { e: 'chip'; c: number[] }
   | { e: 'vote' }
   | { e: 'mapChosen'; map: string; votes: number }
-  | { e: 'chat'; n: string; t: number; text: string; dead: boolean }
+  | { e: 'chat'; n: string; t: number; text: string; dead: boolean; tm: boolean }
   | { e: 'info'; text: string }
   | { e: 'step'; s: number }
   | { e: 'reload'; s: number };
@@ -318,7 +319,7 @@ export type ClientMsg =
   /** mode: в какой режим войти (рейтинговый — только в уже найденный матч) */
   | { t: 'auth'; token: string; mode?: GameMode; room?: string }
   | { t: 'buy'; item: string }
-  | { t: 'chat'; text: string }
+  | { t: 'chat'; text: string; team?: boolean }
   | { t: 'ping'; c: number }
   | { t: 'vote'; map: string }
   | { t: 'team'; team: number }

@@ -9,6 +9,14 @@ export const PART_ARM_R = 3;
 export const PART_LEG_L = 4;
 export const PART_LEG_R = 5;
 export const PART_COUNT = 6;
+/** Степень разрыва тела при смерти: целое, голова, частично (1–2 части у взрыва), полностью. */
+export const GIB_NONE = 0;
+export const GIB_HEAD = 1;
+export const GIB_PARTIAL = 2;
+export const GIB_FULL = 3;
+export type GibLevel = 0 | 1 | 2 | 3;
+/** Маска всех частей (бит 1 << PART_*). */
+export const GIB_ALL_PARTS = (1 << 6) - 1;
 export const PART_NAMES = ['голова', 'торс', 'левая рука', 'правая рука', 'левая нога', 'правая нога'];
 
 /** Размер частей в вокселях: x (ширина), y (высота), z (глубина). Перед тела — -Z. */

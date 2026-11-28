@@ -73,6 +73,8 @@ export class Hud {
   private crosshair: HTMLDivElement;
   private hitmarker: HTMLDivElement;
   private bombIcon: HTMLDivElement;
+  /** надпись разминки и отсчёта до начала рейтингового матча */
+  private warmup: HTMLDivElement;
   private netInfo: HTMLDivElement;
   private centerUntil = 0;
   private hitUntil = 0;
@@ -96,6 +98,7 @@ export class Hud {
     this.scoreCT = el('div', 'score ct', top, '0');
     this.portraitsCT = el('div', 'portraits ct', top);
     this.bombIcon = el('div', 'bomb-icon', top, 'БОМБА');
+    this.warmup = el('div', 'warmup-banner', this.root);
 
     const mm = el('div', 'minimap-wrap', this.root);
     this.minimap = el('canvas', 'minimap', mm);
@@ -225,6 +228,7 @@ export class Hud {
       this.renderPortraits(this.portraitsT, st.pl.filter((p) => p.t === 0));
       this.renderPortraits(this.portraitsCT, st.pl.filter((p) => p.t === 1));
       this.bombIcon.style.display = st.pl.some((p) => p.i === me.id && p.bomb) ? 'block' : 'none';
+      this.setWarmup(st);
     }
     this.money.textContent = '$' + me.money;
     if (now > this.centerUntil) {
@@ -232,6 +236,21 @@ export class Hud {
       this.sub.textContent = '';
     }
     this.hitmarker.style.opacity = now < this.hitUntil ? '1' : '0';
+  }
+
+  /** «Разминка — ждём игроков 7/10» или «Матч начнётся через N» (только перед рейтинговым матчем). */
+  private setWarmup(st: RoomState) {
+    let text = '';
+    let cls = 'warmup-banner';
+    if (st.ph === 'warmup') {
+      const [n, total] = st.wu ?? [0, 0];
+      text = `Разминка — ждём игроков ${n}/${total}`;
+    } else if (st.ph === 'countdown') {
+      text = `Матч начнётся через ${Math.max(0, Math.ceil(st.tl))}`;
+      cls += ' countdown';
+    }
+    if (this.warmup.textContent !== text) this.warmup.textContent = text;
+    if (this.warmup.className !== cls) this.warmup.className = cls;
   }
 
   /** аватарки людей по слотам (приходят отдельным сообщением при смене состава) */

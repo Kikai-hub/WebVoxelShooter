@@ -57,7 +57,6 @@ import {
   overtimeOf,
   swapsSidesBefore,
   winTarget,
-  HEAD_EXPLODE_CHANCE,
   HELMET_PRICE,
   HISTORY_TICKS,
   KNIFE,
@@ -113,6 +112,15 @@ import {
   newOwnState,
   newPState,
   rand01,
+  GIB_ALL_PARTS,
+  GIB_FULL,
+  GIB_HEAD,
+  GIB_NONE,
+  GIB_PARTIAL,
+  PART_ARM_L,
+  PART_ARM_R,
+  PART_LEG_R,
+  POSE_STRIDE,
   raycastBody,
   raycastMap,
   shotDirection,
@@ -120,6 +128,7 @@ import {
   newSpray,
   sprayTick,
   sprayFire,
+  sprayHold,
   sprayKick,
   sprayCone,
   moveSpeedMul,
@@ -153,7 +162,16 @@ export interface RoomOpts {
   roundTime?: number;
   /** рейтинговый матч: accountId для каждого слота (первые teamSize — нападение) */
   roster?: string[];
+  /** разминка перед рейтинговым матчем (с); 0 — сразу матч */
+  warmup?: number;
+  /** отсчёт после разминки до начала матча (с) */
+  countdown?: number;
 }
+
+/** длина разминки перед рейтинговым матчем, отсчёта до начала и задержка возрождения (с) */
+export const WARMUP_TIME = 180;
+export const COUNTDOWN_TIME = 15;
+export const WARMUP_RESPAWN = 2;
 export interface MatchResult {
   room: Room;
   winner: Team;
@@ -252,7 +270,9 @@ export class Player {
   skin = 0;
   loadout: Loadout = DEFAULT_LOADOUT;
   deathYaw = 0;
-  exploded = false;
+  /** степень разрыва тела при смерти (GIB_*) и маска оторванных частей — для трупа у опоздавших */
+  gib = 0;
+  gibMask = 0;
   lastHurtFrom: [number, number, number] | null = null;
   lastHurtAt = -10;
   diedAt = -10;
@@ -298,6 +318,15 @@ export class Player {
   eye(): [number, number, number] {
     return [this.st.x, this.st.y + eyeHeight(this.st), this.st.z];
   }
+}
+
+/** Взрыв для расчёта разрыва тела: центр, радиус поражения, бомба или граната. */
+interface Blast {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+  bomb: boolean;
 }
 
 interface Bomb {
@@ -379,10 +408,12 @@ export class Room {
   onStat: ((accountId: string, d: StatDelta) => void) | null = null;
 
   private stat(p: Player | null, d: StatDelta) {
+    // разминка не идёт в статистику аккаунта: ни убийства, ни урон, ни выстрелы, ни время
+    if (this.warm) return;
     if (p && !p.isBot && p.accountId) this.onStat?.(p.accountId, d);
   }
   /** статистика для теста ботов */
-  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0, 0], nadeKills: 0, blinded: 0 };
+  stats = { roundsWon: [0, 0] as [number, number], matches: 0, matchWins: [0, 0] as [number, number], stuck: 0, reasons: {} as Record<string, number>, kills: 0, headshots: 0, explodes: 0, gibsPartial: 0, gibsFull: 0, shots: 0, hits: 0, reactSum: 0, reactN: 0, mapsPlayed: {} as Record<string, number>, nades: [0, 0, 0, 0], nadeKills: 0, blinded: 0 };
   tickTimeMs = 0;
 
   /** режим: паблик (боты, свободный вход), матчмейкинг 5×5 или союзники 2×2 */
@@ -397,6 +428,9 @@ export class Room {
   readonly maxSpectators: number;
   /** комната закрыта (рейтинговый матч окончен или брошен) — её можно удалять */
   closed = false;
+  /** разминка и отсчёт до начала рейтингового матча (с) */
+  readonly warmupTime: number;
+  readonly countdownTime: number;
   /** рейтинговый матч без единого подключения дольше этого (с) — отменяется */
   abandonAfter = 90;
   /** рейтинговый матч закончился */
@@ -417,13 +451,22 @@ export class Room {
     this.roundTime = opts.roundTime ?? ROUND_TIME;
     this.roster = opts.roster ?? null;
     this.maxSpectators = this.roster ? 0 : maxSpectators;
+    this.warmupTime = this.roster ? Math.max(0, opts.warmup ?? WARMUP_TIME) : 0;
+    this.countdownTime = Math.max(0, opts.countdown ?? COUNTDOWN_TIME);
     this.loadMap(MAPS[initialMap] ? initialMap : 'market');
     for (let i = 0; i < this.teamSize * 2; i++) {
       const p = new Player(i, i < this.teamSize ? TEAM_T : TEAM_CT);
       this.makeBot(p);
       this.players.push(p);
     }
-    this.startMatch();
+    // рейтинговый матч начинается с разминки, пока подключаются игроки
+    if (this.warmupTime > 0) this.startWarmup();
+    else this.startMatch();
+  }
+
+  /** Разминка или отсчёт перед рейтинговым матчем: ничего не идёт в счёт. */
+  get warm(): boolean {
+    return this.phase === 'warmup' || this.phase === 'countdown';
   }
 
   get time(): number {
@@ -563,7 +606,7 @@ export class Room {
   }
 
   private assignHuman(p: Player, conn: Conn) {
-    const immediate = !p.alive || this.phase === 'freeze' || this.phase === 'roundEnd' || this.phase === 'matchEnd';
+    const immediate = !p.alive || this.warm || this.phase === 'freeze' || this.phase === 'roundEnd' || this.phase === 'matchEnd';
     if (immediate) {
       this.replaceBot(p, conn);
     } else {
@@ -606,6 +649,8 @@ export class Room {
     p.lastButtons = 0;
     // в заморозке игрок сразу встаёт на место бота; если бот мёртв — наблюдает до следующего раунда
     if (wasAlive && this.phase === 'freeze') p.slot = SLOT_PISTOL;
+    // в разминке — сразу в игру, на точку возрождения своей стороны и с деньгами на любые покупки
+    if (this.warm) this.warmSpawn(p);
     conn.slot = p.id;
     conn.pendingSlot = -1;
     this.sendFull(conn);
@@ -743,11 +788,19 @@ export class Room {
 
   canBuy(p: Player): boolean {
     if (!p.alive) return false;
-    const inTime = this.phase === 'freeze' || (this.phase === 'live' && this.time < this.liveStart + BUY_TIME);
+    // в разминке покупать можно всё время
+    const inTime = this.warm || this.phase === 'freeze' || (this.phase === 'live' && this.time < this.liveStart + BUY_TIME);
     return inTime && inRect(this.info.spawnZones[p.team], p.st.x, p.st.z);
   }
 
   buy(p: Player, item: string): boolean {
+    const ok = this.buyItem(p, item);
+    // в разминке деньги не тратятся
+    if (ok && this.warm) p.money = MAX_MONEY;
+    return ok;
+  }
+
+  private buyItem(p: Player, item: string): boolean {
     if (!this.canBuy(p)) return false;
     const nt = NADE_BUY[item] ?? -1;
     if (nt >= 0) {
@@ -895,6 +948,89 @@ export class Room {
 
   // ---------- Матч и раунды ----------
 
+  /**
+   * Разминка рейтингового матча: все сразу на поле, возрождение через 2 с, покупка без трат,
+   * бомбы нет. Ждём всех из состава (не дольше warmupTime), затем отсчёт и обычный матч.
+   */
+  private startWarmup() {
+    this.phase = 'warmup';
+    this.phaseEnd = this.time + this.warmupTime;
+    this.scores = [0, 0];
+    this.roundNum = 0;
+    this.bomb = { status: 'none', carrier: -1, x: 0, y: 0, z: 0, site: -1, explodeAt: 0, defuser: -1 };
+    this.nadesInFlight = [];
+    this.smokes = [];
+    this.fires = [];
+    this.drops = [];
+    this.chips = [];
+    this.chipsPerBlock.clear();
+    for (const p of this.players) this.warmSpawn(p, false);
+    this.broadcastFull();
+  }
+
+  /** Пистолет игрока по умолчанию: свой из набора (бесплатный) или стандартный. */
+  private basePistol(p: Player): WeaponInst {
+    const own = !p.isBot ? WEAPON_BY_KEY[p.loadout.pistol[p.team]] : undefined;
+    return inst(own && own.price === 0 ? own : DEFAULT_PISTOL);
+  }
+
+  /** Появиться (или возродиться) в разминке: случайная точка своей стороны, 16 000 и стартовое оружие. */
+  private warmSpawn(p: Player, announce = true) {
+    const spawns = this.info.spawns[p.team];
+    const [sx, sz] = spawns[this.rng.int(spawns.length)];
+    p.st = newPState(sx, 0.5, sz);
+    p.yaw = p.team === TEAM_T ? Math.PI : 0;
+    p.pitch = 0;
+    p.alive = true;
+    p.hp = 100;
+    p.armor = 0;
+    p.helmet = false;
+    p.hasKit = false;
+    p.hasBomb = false;
+    p.money = MAX_MONEY;
+    p.primary = null;
+    p.pistol = this.basePistol(p);
+    p.nades = [0, 0, 0, 0];
+    p.purchases = [];
+    p.wounds = [];
+    p.gib = 0;
+    p.gibMask = 0;
+    p.dmgTaken.clear();
+    p.roundKills = 0;
+    p.roundDamage = 0;
+    p.objective = false;
+    p.useProgress = 0;
+    p.reloadEnd = 0;
+    p.nadeHold = 0;
+    p.spray = newSpray();
+    p.nextFire = p.simTime;
+    p.slot = SLOT_PISTOL;
+    p.visUntil.fill(0);
+    p.blindUntil = 0;
+    p.bot?.onRoundStart();
+    if (announce) this.events.push({ e: 'respawn', s: p.id });
+  }
+
+  /** Все игроки состава на своих местах (пустые места состава не ждём). */
+  rosterReady(): boolean {
+    const [n, total] = this.rosterCount();
+    return n >= total;
+  }
+
+  /** Сколько игроков состава уже в игре (подключены и на своём месте) и сколько их всего. */
+  rosterCount(): [number, number] {
+    if (!this.roster) return [0, 0];
+    let n = 0,
+      total = 0;
+    this.roster.forEach((acc, i) => {
+      if (!acc) return;
+      total++;
+      const p = this.players[i];
+      if (!p.isBot && p.accountId === acc && p.conn) n++;
+    });
+    return [n, total];
+  }
+
   startMatch() {
     this.scores = [0, 0];
     this.lossStreak = [0, 0];
@@ -903,7 +1039,7 @@ export class Room {
     for (const p of this.players) {
       p.money = START_MONEY;
       p.primary = null;
-      p.pistol = inst(DEFAULT_PISTOL);
+      p.pistol = this.basePistol(p);
       p.armor = 0;
       p.helmet = false;
       p.hasKit = false;
@@ -976,7 +1112,8 @@ export class Room {
       p.roundDamage = 0;
       p.objective = false;
       p.purchases = [];
-      p.exploded = false;
+      p.gib = 0;
+      p.gibMask = 0;
       p.hasBomb = false;
       p.useProgress = 0;
       p.reloadEnd = 0;
@@ -1084,6 +1221,23 @@ export class Room {
   private updateRound() {
     const now = this.time;
     switch (this.phase) {
+      case 'warmup':
+      case 'countdown':
+        // возрождение через 2 с после смерти
+        for (const p of this.players) if (!p.alive && now - p.diedAt >= WARMUP_RESPAWN) this.warmSpawn(p);
+        if (this.phase === 'warmup') {
+          // пришли все из состава или вышло время разминки — отсчёт до начала матча
+          const ready = this.rosterReady();
+          if (ready || now >= this.phaseEnd) {
+            this.phase = 'countdown';
+            this.phaseEnd = now + this.countdownTime;
+            this.events.push({ e: 'info', text: ready ? `Все в сборе. Матч начнётся через ${this.countdownTime} с` : `Не все подключились: матч начнётся через ${this.countdownTime} с, пустые места займут боты` });
+          }
+        } else if (now >= this.phaseEnd) {
+          // полный сброс: деньги, оружие, счёт, статистика, позиции — и обычная заморозка первого раунда
+          this.startMatch();
+        }
+        break;
       case 'freeze':
         if (now >= this.phaseEnd) {
           this.phase = 'live';
@@ -1102,7 +1256,7 @@ export class Room {
           for (const p of this.players) {
             if (!p.alive) continue;
             const d = Math.hypot(p.st.x - this.bomb.x, p.st.z - this.bomb.z);
-            if (d < 12) this.damage(p, null, d < 6 ? 500 : Math.round(120 * (1 - d / 12)), PART_TORSO, [p.st.x - this.bomb.x, 1, p.st.z - this.bomb.z], KNIFE, null);
+            if (d < 12) this.damage(p, null, d < 6 ? 500 : Math.round(120 * (1 - d / 12)), PART_TORSO, [p.st.x - this.bomb.x, 1, p.st.z - this.bomb.z], KNIFE, null, { x: this.bomb.x, y: this.bomb.y, z: this.bomb.z, radius: 12, bomb: true });
           }
           this.endRound(TEAM_T, 'Бомба взорвана');
         }
@@ -1370,13 +1524,14 @@ export class Room {
     if (wi) wi.mag--;
     p.nextFire = p.simTime + def.interval;
     const speed = Math.hypot(p.st.vx, p.st.vz);
-    const si = sprayFire(p.spray);
+    const si = sprayFire(p.spray, sprayHold(def));
     const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (p.st.onGround ? 0 : 0.08) + sprayCone(def, si) * (p.st.crouch ? 0.7 : 1);
     const kick = sprayKick(def, si);
     const [ex, ey, ez] = p.eye();
     const vt = Math.max(this.tick - MAX_LAG_COMP_TICKS, Math.min(this.tick, cmd.viewTick));
     const seed = p.id * 1000003 + cmd.seq;
     const hitsBy = new Map<number, number>();
+    const headsBy = new Map<number, number>(); // дробины в голову — для шанса разрыва головы у дробовика
     for (let k = 0; k < def.pellets; k++) {
       const d = shotDirection(p.yaw, p.pitch, spread, seed, k, this.dir, kick);
       let maxT = def.range;
@@ -1418,15 +1573,27 @@ export class Room {
         }
         const dmg = damageAt(def, maxT) * PART_DAMAGE[bh.part]; // падение урона с дистанцией
         hitsBy.set(victim.id, (hitsBy.get(victim.id) ?? 0) + 1);
-        this.damage(victim, p, dmg, bh.part, [d[0], d[1], d[2]], def, [ex, ey, ez]);
+        let headChance = def.headExplode;
+        if (bh.part === PART_HEAD && def.pellets > 1) {
+          // дробовик: шанс растёт с числом дробин в голову (полный — от трёх) и падает с дальностью
+          const heads = (headsBy.get(victim.id) ?? 0) + 1;
+          headsBy.set(victim.id, heads);
+          headChance = def.headExplode * Math.min(1, heads / 3) * (damageAt(def, maxT) / def.damage);
+        }
+        this.damage(victim, p, dmg, bh.part, [d[0], d[1], d[2]], def, [ex, ey, ez], undefined, headChance);
       }
     }
     // боты слышат выстрелы
     for (const q of this.players) q.bot?.hear(ex, ez, 30, p);
   }
 
-  damage(victim: Player, attacker: Player | null, dmg: number, part: number, dir: [number, number, number], def: WeaponDef, from: [number, number, number] | null) {
+  /**
+   * Урон игроку. blast — взрыв (центр, радиус, бомба или граната): от него зависит разрыв тела.
+   * headChance — шанс разрыва головы при убийстве в голову (по умолчанию из оружия).
+   */
+  damage(victim: Player, attacker: Player | null, dmg: number, part: number, dir: [number, number, number], def: WeaponDef, from: [number, number, number] | null, blast?: Blast, headChance = def.headExplode) {
     if (!victim.alive) return;
+    const hpBefore = victim.hp;
     if (victim.armor > 0 && (part !== PART_HEAD || victim.helmet) && attacker) {
       const absorbed = dmg * (1 - def.armorPen);
       victim.armor = Math.max(0, victim.armor - Math.round(absorbed * 0.5));
@@ -1456,12 +1623,21 @@ export class Room {
       victim.deathYaw = victim.yaw;
       victim.useProgress = 0;
       const hs = part === PART_HEAD && !!attacker;
-      const explode = hs && rand01(this.tick * 7919 + victim.id * 31 + (attacker?.id ?? 0)) < HEAD_EXPLODE_CHANCE;
-      victim.exploded = explode;
+      const seed = this.tick * 7919 + victim.id * 31 + (attacker?.id ?? 0);
+      let gib = GIB_NONE,
+        gibMask = 0;
+      if (hs && rand01(seed) < headChance) {
+        gib = GIB_HEAD;
+        gibMask = 1 << PART_HEAD;
+      } else if (blast) [gib, gibMask] = this.blastGib(victim, blast, d - hpBefore, seed);
+      victim.gib = gib;
+      victim.gibMask = gibMask;
       this.stats.kills++;
       if (def.kind === 'grenade') this.stats.nadeKills++;
       if (hs) this.stats.headshots++;
-      if (explode) this.stats.explodes++;
+      if (gib === GIB_HEAD) this.stats.explodes++;
+      else if (gib === GIB_PARTIAL) this.stats.gibsPartial++;
+      else if (gib === GIB_FULL) this.stats.gibsFull++;
       if (attacker && attacker !== victim) {
         attacker.kills++;
         if (attacker.team !== victim.team) {
@@ -1504,7 +1680,7 @@ export class Room {
       victim.helmet = false;
       victim.hasKit = false;
       victim.purchases = [];
-      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, as: assister ? assister.id : -1, v: victim.id, w: def.id, hs, ex: explode, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
+      this.events.push({ e: 'kill', k: attacker ? attacker.id : -1, as: assister ? assister.id : -1, v: victim.id, w: def.id, hs, gib, gm: gibMask, o: blast ? [blast.x, blast.y, blast.z] : undefined, d: dir, p: part, at: [victim.st.x, victim.st.y, victim.st.z, victim.yaw] });
       for (const q of this.players) q.bot?.onTeammateDeath(victim);
       if (victim.hasBomb) {
         victim.hasBomb = false;
@@ -1675,6 +1851,35 @@ export class Room {
     }
   }
 
+  /**
+   * Степень разрыва тела от взрыва: чем ближе и чем больше урон сверх оставшегося здоровья, тем сильнее.
+   * Бомба ближе 6 м рвёт всегда полностью. При частичном разрыве отрываются 1–2 части (голова, руки, ноги),
+   * ближайшие к центру взрыва. Решение детерминированное (rand01 от тика и слотов).
+   */
+  private blastGib(victim: Player, b: Blast, overkill: number, seed: number): [number, number] {
+    const dist = b.bomb ? Math.hypot(victim.st.x - b.x, victim.st.z - b.z) : Math.hypot(victim.st.x - b.x, victim.st.y + 1 - b.y, victim.st.z - b.z);
+    if (b.bomb && dist < 6) return [GIB_FULL, GIB_ALL_PARTS];
+    const near = Math.max(0, 1 - dist / b.radius); // 1 — в упор, 0 — на краю
+    const over = Math.min(1, Math.max(0, overkill) / 50);
+    // полный разрыв — только в упор (ближе ~1,5 м от гранаты), с запасом урона почти наверняка
+    const pFull = near > 0.75 ? Math.min(1, (near - 0.75) * 4 * (0.5 + 0.5 * over)) : 0;
+    if (rand01(seed + 101) < pFull) return [GIB_FULL, GIB_ALL_PARTS];
+    const pPartial = Math.min(0.95, Math.max(0, near * 0.8 + over * 0.5 - 0.15));
+    if (rand01(seed + 202) >= pPartial) return [GIB_NONE, 0];
+    // какие части ближе всего к взрыву
+    computePose(victim.st.x, victim.st.y, victim.st.z, victim.deathYaw, 0, victim.st.crouch, this.pose);
+    const cand = [PART_HEAD, PART_ARM_L, PART_ARM_R, PART_LEG_L, PART_LEG_R]
+      .map((pt) => {
+        const o = pt * POSE_STRIDE;
+        return { pt, d: Math.hypot(this.pose[o] - b.x, this.pose[o + 1] - b.y, this.pose[o + 2] - b.z) };
+      })
+      .sort((a, c) => a.d - c.d);
+    const two = rand01(seed + 303) < 0.25 + 0.5 * over;
+    let mask = 1 << cand[0].pt;
+    if (two) mask |= 1 << cand[1].pt;
+    return [GIB_PARTIAL, mask];
+  }
+
   private explodeHE(owner: Player, team: Team, x: number, y: number, z: number) {
     const def = WEAPON_BY_KEY.he;
     this.blastChips(x, y, z);
@@ -1699,7 +1904,7 @@ export class Room {
         this.events.push({ e: 'wound', v: v.id, p: part, x: px, y: py, z: pz, r: 1, x2: 0 });
       }
       const l = Math.max(0.01, Math.hypot(dx, dz));
-      this.damage(v, owner, dmg, PART_TORSO, [dx / l, 0.4, dz / l], def, [x, y, z]);
+      this.damage(v, owner, dmg, PART_TORSO, [dx / l, 0.4, dz / l], def, [x, y, z], { x, y, z, radius: HE_RADIUS, bomb: false });
     }
   }
 
@@ -1985,6 +2190,7 @@ export class Room {
       hl: this.half,
       votes: this.voteCounts(),
       drops: this.drops.map((d) => ({ i: d.id, w: d.inst.def.id, x: d.x, y: d.y, z: d.z, r: d.r })),
+      ...(this.warm ? { wu: this.rosterCount() } : {}),
     };
   }
 
@@ -2013,7 +2219,7 @@ export class Room {
       you: conn.slot,
       tick: this.tick,
       map: this.mapId,
-      corpses: this.players.filter((p) => !p.alive).map((p) => ({ i: p.id, x: p.st.x, y: p.st.y, z: p.st.z, yaw: p.deathYaw, ex: p.exploded })),
+      corpses: this.players.filter((p) => !p.alive).map((p) => ({ i: p.id, x: p.st.x, y: p.st.y, z: p.st.z, yaw: p.deathYaw, g: p.gib, gm: p.gibMask })),
       wounds: this.players.filter((p) => p.wounds.length).map((p) => ({ i: p.id, ops: p.wounds.slice() })),
       tracers: true,
       smokes: this.smokes.map((s) => ({ x: s.x, y: s.y, z: s.z, left: s.end - this.time })),

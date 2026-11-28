@@ -27,6 +27,14 @@ const TOP = 0,
   KNEE_L = 13,
   KNEE_R = 14;
 const NP = 15;
+/** Точки, уходящие вместе с оторванной частью. */
+const DETACH: Record<number, number[]> = {
+  [PART_HEAD]: [TOP],
+  [PART_ARM_L]: [ELB_L, HAND_L],
+  [PART_ARM_R]: [ELB_R, HAND_R],
+  [PART_LEG_L]: [KNEE_L, FOOT_L],
+  [PART_LEG_R]: [KNEE_R, FOOT_R],
+};
 const STEP = 1 / 120;
 
 interface Stick {
@@ -57,6 +65,8 @@ export class Ragdoll {
   private restTime = 0;
   private acc = 0;
   sleeping = false;
+  /** точки оторванных частей: без связей с телом и без ограничений суставов */
+  private free = new Uint8Array(NP);
 
   constructor(
     private map: VoxelMap,
@@ -168,6 +178,20 @@ export class Ragdoll {
         add(a, b, 2);
   }
 
+  /**
+   * Оторвать часть: её точки (голова — макушка, рука — локоть и кисть, нога — колено и стопа) теряют связи
+   * с остальным телом. Плечи и бёдра — часть жёсткого торса и остаются: тело ложится на землю обрубком,
+   * а не висит на невидимых ногах.
+   */
+  detach(part: number) {
+    const pts = DETACH[part];
+    if (!pts) return;
+    for (const i of pts) this.free[i] = 1;
+    this.sticks = this.sticks.filter((s) => this.free[s.a] === this.free[s.b]);
+    this.sleeping = false;
+    this.restTime = 0;
+  }
+
   private p(i: number): V3 {
     return [this.x[i * 3], this.x[i * 3 + 1], this.x[i * 3 + 2]];
   }
@@ -253,6 +277,7 @@ export class Ragdoll {
       [SH_L, ELB_L, HAND_L, -1],
       [SH_R, ELB_R, HAND_R, -1],
     ] as const) {
+      if (this.free[j]) continue;
       const ja = j * 3;
       const mx = (this.x[a * 3] + this.x[b * 3]) / 2,
         my = (this.x[a * 3 + 1] + this.x[b * 3 + 1]) / 2,

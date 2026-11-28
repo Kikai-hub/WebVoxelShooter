@@ -18,6 +18,8 @@ export class Debris {
   private rest: Uint8Array;
   private spin: Float32Array;
   private next = 0;
+  /** сколько частиц выпущено недавно (затухает за ~0,5 с) — мерило нагрузки для разлёта тел */
+  private recent = 0;
   private m4 = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private e = new THREE.Euler();
@@ -55,6 +57,7 @@ export class Debris {
 
   /** life < 0 — кубик остаётся лежать до конца раунда (пока его не вытеснят новые). */
   spawn(x: number, y: number, z: number, vx: number, vy: number, vz: number, color: number, life = -1, size = 1) {
+    this.recent++;
     const i = this.next;
     this.next = (this.next + 1) % this.n;
     this.px[i] = x;
@@ -71,6 +74,14 @@ export class Debris {
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 
+  /**
+   * Нагрузка 0..1+: доля буфера, выпущенная за последние ~0,5 с. Разлёт тел при высокой нагрузке
+   * берёт куски крупнее, чтобы несколько одновременных разрывов (бомба) не вытеснили всё и не роняли FPS.
+   */
+  load(): number {
+    return this.recent / this.n;
+  }
+
   clear() {
     for (let i = 0; i < this.n; i++) {
       this.life[i] = 0;
@@ -81,6 +92,7 @@ export class Debris {
   }
 
   update(dt: number) {
+    this.recent *= Math.exp(-dt * 4);
     const map = this.map;
     let dirty = false;
     for (let i = 0; i < this.n; i++) {
@@ -110,10 +122,13 @@ export class Debris {
             this.py[i] = (Math.floor(ny / VOXEL) + 1) * VOXEL + BVOX * 0.5 * this.size[i];
           }
         } else {
+          // удар о стену: отскок по горизонтали, но падение продолжается (иначе кусок «прилипает» к стене)
           this.vx[i] *= -0.3;
           this.vz[i] *= -0.3;
+          if (!map.solidAt(this.px[i], ny, this.pz[i])) this.py[i] = ny;
         }
-        if (Math.abs(this.vx[i]) + Math.abs(this.vy[i]) + Math.abs(this.vz[i]) < 0.4) {
+        // засыпает только с опорой снизу, а не в воздухе у стены
+        if (Math.abs(this.vx[i]) + Math.abs(this.vy[i]) + Math.abs(this.vz[i]) < 0.4 && map.solidAt(this.px[i], this.py[i] - BVOX * this.size[i], this.pz[i])) {
           this.rest[i] = 1;
           this.spin[i] = Math.round(this.spin[i] / (Math.PI / 2)) * (Math.PI / 2);
         }

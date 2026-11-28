@@ -94,7 +94,6 @@ export const FRICTION = 8;
 export const MAX_FALL_SPEED = 28;
 
 // Раны
-export const HEAD_EXPLODE_CHANCE = 0.4;
 export const MAX_WOUNDS = 60;
 
 // Кнопки UserCmd

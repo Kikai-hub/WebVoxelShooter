@@ -29,7 +29,7 @@ import {
   type GameMode,
 } from '../../shared/src/index';
 import type { AccountStore } from './accounts';
-import { Room, type MatchResult } from './room';
+import { COUNTDOWN_TIME, Room, WARMUP_TIME, type MatchResult } from './room';
 
 export type RankedMode = 'mm' | 'wm';
 const MAPS = MAP_LIST.map((m) => m.id);
@@ -97,6 +97,9 @@ export class RoomManager {
       half: wm ? WINGMAN_HALF : undefined,
       roundTime: wm ? WINGMAN_ROUND_TIME : undefined,
       roster,
+      // разминка перед рейтинговым матчем и отсчёт до начала (с); для тестов — RANKED_WARMUP / RANKED_COUNTDOWN
+      warmup: roster ? Math.max(0, Number(process.env.RANKED_WARMUP ?? WARMUP_TIME)) : 0,
+      countdown: Math.max(0, Number(process.env.RANKED_COUNTDOWN ?? COUNTDOWN_TIME)),
     });
     room.onStat = (acc, d) => this.accounts.addStats(acc, d);
     room.onMatchOver = (r) => this.applyResult(r);

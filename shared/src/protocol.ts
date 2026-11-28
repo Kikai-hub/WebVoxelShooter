@@ -207,7 +207,11 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
 // ---- JSON-сообщения ----
 
 export type BombStatus = 'carried' | 'dropped' | 'planted' | 'defused' | 'exploded' | 'none';
-export type Phase = 'freeze' | 'live' | 'planted' | 'roundEnd' | 'matchEnd' | 'vote';
+/**
+ * Фазы комнаты. warmup и countdown — только перед рейтинговым матчем: разминка, пока подключаются
+ * игроки (возрождение, покупка без трат, ничего не идёт в статистику), затем отсчёт до начала матча.
+ */
+export type Phase = 'warmup' | 'countdown' | 'freeze' | 'live' | 'planted' | 'roundEnd' | 'matchEnd' | 'vote';
 
 export interface PublicPlayer {
   i: number; // слот
@@ -260,14 +264,19 @@ export interface RoomState {
   votes: Record<string, number>;
   /** оружие на земле: id, оружие, позиция */
   drops: Array<{ i: number; w: number; x: number; y: number; z: number; r: number }>;
+  /** разминка и отсчёт рейтингового матча: сколько игроков из состава уже в игре и сколько их всего */
+  wu?: [number, number];
 }
 
 /** События, которые сервер рассылает пачкой раз в тик. */
 export type GameEvent =
   | { e: 'shot'; s: number; a: [number, number, number]; b: [number, number, number]; h: 0 | 1 | 2 } // h: 0 мимо, 1 карта, 2 тело
   | { e: 'wound'; v: number; p: number; x: number; y: number; z: number; r: number; x2: 0 | 1 }
-  /** as — помощник (слот или −1) */
-  | { e: 'kill'; k: number; as?: number; v: number; w: number; hs: boolean; ex: boolean; d: [number, number, number]; p: number; at: [number, number, number, number] }
+  /**
+   * as — помощник (слот или −1). gib — степень разрыва (GIB_*: 0 целый, 1 голова, 2 частично, 3 полностью),
+   * gm — маска оторванных частей (биты 1 << PART_*), o — центр взрыва (для разлёта частей от гранаты и бомбы).
+   */
+  | { e: 'kill'; k: number; as?: number; v: number; w: number; hs: boolean; gib: number; gm: number; o?: [number, number, number]; d: [number, number, number]; p: number; at: [number, number, number, number] }
   | { e: 'hurt'; v: number; from: [number, number, number]; dmg: number }
   | { e: 'plant'; p: [number, number, number]; site: number }
   | { e: 'defuse' }
@@ -293,14 +302,17 @@ export type GameEvent =
   | { e: 'step'; s: number }
   | { e: 'reload'; s: number }
   /** взмах ножом (s — кто): звук и анимация у остальных */
-  | { e: 'swing'; s: number };
+  | { e: 'swing'; s: number }
+  /** возрождение в разминке (s — кто): тело собирается заново */
+  | { e: 'respawn'; s: number };
 
 export interface FullState {
   t: 'full';
   you: number; // слот или -1 для наблюдателя
   tick: number;
   map: string;
-  corpses: Array<{ i: number; x: number; y: number; z: number; yaw: number; ex: boolean }>;
+  /** g, gm — степень разрыва и маска оторванных частей, как в событии kill */
+  corpses: Array<{ i: number; x: number; y: number; z: number; yaw: number; g: number; gm: number }>;
   wounds: Array<{ i: number; ops: number[] }>; // плоский массив p,x,y,z,r,x2
   tracers: boolean;
   smokes: Array<{ x: number; y: number; z: number; left: number }>;

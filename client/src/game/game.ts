@@ -15,6 +15,17 @@ import {
   BTN_DROP,
   SMOKE_TIME,
   FIRE_RADIUS,
+  GIB_ALL_PARTS,
+  GIB_FULL,
+  GIB_HEAD,
+  GIB_PARTIAL,
+  HE_RADIUS,
+  PART_ARM_L,
+  PART_ARM_R,
+  PART_HEAD,
+  PART_LEG_L,
+  PART_LEG_R,
+  POSE_STRIDE,
   FIRE_TIME,
   BTN_RIGHT,
   BTN_USE,
@@ -67,6 +78,7 @@ import {
   newSpray,
   sprayTick,
   sprayFire,
+  sprayHold,
   spraySync,
   sprayKick,
   sprayCone,
@@ -144,6 +156,14 @@ const WOUND_HEIGHT = [1.65, 1.15, 1.2, 1.2, 0.45, 0.45];
 
 /** Какую долю смещения паттерна очереди показывает отдача камеры. */
 const PUNCH_SHARE = 0.5;
+/** Видимый толчок камеры на выстрел в долях `recoil` оружия (Glock ≈ 0.7°, Desert Eagle ≈ 1.7°, AWM ≈ 2.9°). */
+const KICK_SHARE = 1;
+
+/** Скорость разлёта кусков тела (м/с) от взрыва на расстоянии dist: у бомбы радиус 12 м, у гранаты — HE_RADIUS. */
+function gibForce(bomb: boolean, dist: number): number {
+  const near = Math.max(0, 1 - dist / (bomb ? 12 : HE_RADIUS));
+  return bomb ? 5 + 6 * near : 3 + 5 * near;
+}
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -199,6 +219,9 @@ export class Game {
   private punchU = 0;
   private punchTR = 0;
   private punchTU = 0;
+  /** толчок камеры от выстрела (рад вверх) и его цель */
+  private kick = 0;
+  private kickT = 0;
   private lastButtons = 0;
   private sentCmds: UserCmd[] = [];
 
@@ -633,7 +656,7 @@ export class Game {
       this.spray.idx = own.sprayIdx;
       this.spray.idle = own.sprayIdle;
       this.firedSeqs.clear();
-      this.punchTR = this.punchTU = 0;
+      this.punchTR = this.punchTU = this.kickT = 0;
       copyPState(this.pred, st);
       copyPState(this.prevPred, st);
       this.predAlive = false;
@@ -673,7 +696,7 @@ export class Game {
 
   /** Отдача камеры: за выстрелом взгляд догоняет долю паттерна, после очереди плавно возвращается. */
   private stepPunch() {
-    if (this.spray.idle > SPRAY_HOLD) {
+    if (this.spray.idle > this.spray.hold) {
       const k = Math.exp(-DT * 9);
       this.punchTR *= k;
       this.punchTU *= k;
@@ -681,6 +704,9 @@ export class Game {
     const a = 1 - Math.exp(-DT * 35);
     this.punchR += (this.punchTR - this.punchR) * a;
     this.punchU += (this.punchTU - this.punchU) * a;
+    // толчок от каждого выстрела (только вид, на пули не влияет): резко вверх и быстро назад
+    this.kickT *= Math.exp(-DT * 14);
+    this.kick += (this.kickT - this.kick) * a;
   }
 
   /** полное состояние, пришедшее раньше списка игроков (вход посреди раунда) */
@@ -723,7 +749,8 @@ export class Game {
       computePose(c.x, c.y, c.z, c.yaw, 0, false, this.pose);
       body.applyPose(this.pose);
       body.ragdoll = new Ragdoll(this.info.map, this.pose, [0, 0, 0], 1, true);
-      if (c.ex) body.explodeHead(this.debris, [0, 0.2, 0], this.settings.blood);
+      // разорванное тело у опоздавших: те же части оторваны, куски просто ложатся рядом
+      if (c.g) body.gib(c.g, c.gm, this.debris, [0, 0.2, 0], [c.x, c.y, c.z], 0.8, this.settings.blood);
       p.renderPos = [c.x, c.y, c.z];
     }
     for (const w of m.wounds) {
@@ -839,14 +866,18 @@ export class Game {
           const imp: [number, number, number] = [e.d[0] * k, e.d[1] * k + (kind === 'grenade' ? 2.5 : 0.4), e.d[2] * k];
           body.ragdoll = new Ragdoll(this.info.map, this.pose, imp, e.p, e.hs, vel);
           body.setWeapon('none');
-          if (e.ex) body.explodeHead(this.debris, e.d, this.settings.blood);
+          if (e.gib) {
+            // сила разлёта: пуля в голову — как раньше; взрыв — тем сильнее, чем ближе (у бомбы радиус 12 м)
+            const force = e.o ? gibForce(kind !== 'grenade', Math.hypot(this.pose[POSE_STRIDE] - e.o[0], this.pose[POSE_STRIDE + 1] - e.o[1], this.pose[POSE_STRIDE + 2] - e.o[2])) : 4;
+            body.gib(e.gib, e.gm, this.debris, e.d, e.o ?? null, force, this.settings.blood);
+          }
         }
         this.blood.pooled(e.at[0], e.at[1], e.at[2], this.settings.blood === 'confetti', performance.now() / 1000);
         const k = this.pub(e.k),
           v = this.pub(e.v);
         const wd = k ? WEAPONS[e.w] : null;
         const as = e.as !== undefined && e.as >= 0 ? this.pub(e.as) : undefined;
-        this.hud.killFeed(k ? k.n : '', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, wd ? { key: wd.key, name: wd.name } : null, e.hs, e.ex, e.k === this.myId || e.v === this.myId || e.as === this.myId, as ? as.n : '');
+        this.hud.killFeed(k ? k.n : '', k ? k.t : 2, v ? v.n : '?', v ? v.t : 2, wd ? { key: wd.key, name: wd.name } : null, e.hs, e.gib === GIB_HEAD, e.k === this.myId || e.v === this.myId || e.as === this.myId, as ? as.n : '');
         // «Headshot» — только тому, кто убил в голову; в рейтинговых режимах комментатора нет
         if (e.k === this.myId && e.hs && this.publicMode) this.sfx.announce('headshot');
         if (e.k === this.myId) {
@@ -854,7 +885,7 @@ export class Game {
           this.hud.hitMarker(now);
         }
         if (e.v === this.myId) {
-          this.hud.showCenter('Вы убиты', `${k ? k.n : ''}${e.hs ? (e.ex ? ' · голова вдребезги' : ' · в голову') : ''}`, 3, now, 'dead');
+          this.hud.showCenter('Вы убиты', `${k ? k.n : ''}${e.hs ? (e.gib === GIB_HEAD ? ' · голова вдребезги' : ' · в голову') : e.gib >= GIB_PARTIAL ? ' · разорвало на части' : ''}`, 3, now, 'dead');
           this.predAlive = false;
           this.specTarget = -1;
         }
@@ -1028,6 +1059,24 @@ export class Game {
         sp?.anim.fire('knife');
         const rp = sp?.renderPos;
         if (rp) this.sfx.knifeSwing(Math.hypot(rp[0] - eye.x, rp[1] + 1 - eye.y, rp[2] - eye.z), this.panOf(rp[0], rp[2]));
+        break;
+      }
+      case 'respawn': {
+        // возрождение в разминке: тело (труп, раны) собирается заново по снапшотам
+        const rp = this.getPlayer(e.s);
+        rp.body?.dispose();
+        rp.body = null;
+        rp.dead = false;
+        rp.snaps.length = 0;
+        if (this.st?.pl[e.s]) this.st.pl[e.s].a = true;
+        if (e.s === this.myId) {
+          // своё положение возьмём из следующего снапшота, без сглаживания от трупа
+          this.predAlive = false;
+          this.pending.length = 0;
+          this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
+          this.faceSpawnDirection();
+          this.specTarget = -1;
+        }
         break;
       }
       case 'reload':
@@ -1520,7 +1569,7 @@ export class Game {
 
   private canBuyLocal(): boolean {
     if (!this.st || !this.predAlive || this.myTeam < 0) return false;
-    return (this.st.ph === 'freeze' || this.st.ph === 'live') && inRect(this.info.spawnZones[this.myTeam], this.pred.x, this.pred.z);
+    return (this.st.ph === 'freeze' || this.st.ph === 'live' || this.st.ph === 'warmup' || this.st.ph === 'countdown') && inRect(this.info.spawnZones[this.myTeam], this.pred.x, this.pred.z);
   }
 
   /** 4 — по кругу между гранатами, которые есть. */
@@ -1654,13 +1703,15 @@ export class Game {
     if (this.slot !== def.slot) return;
     this.localNextFire = this.simTime + def.interval;
     const speed = Math.hypot(this.pred.vx, this.pred.vz);
-    const si = sprayFire(this.spray);
+    const si = sprayFire(this.spray, sprayHold(def));
     this.firedSeqs.add(cmd.seq);
     const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + sprayCone(def, si) * (this.pred.crouch ? 0.7 : 1);
     const kick = sprayKick(def, si);
     // взгляд поднимается на половину смещения: пули уходят выше перекрестья — как в CS
     this.punchTR = kick[0] * PUNCH_SHARE;
     this.punchTU = kick[1] * PUNCH_SHARE;
+    // видимый толчок на каждом выстреле, в том числе первом и у оружия без паттерна
+    if (def.kind !== 'knife') this.kickT = Math.min(0.08, this.kickT + def.recoil * KICK_SHARE);
     this.vm.fire();
     this.sfx.shot(def.kind, 0, 0, def.key);
     if (def.kind === 'knife') return;
@@ -1947,7 +1998,7 @@ export class Game {
       const z = a.z + (b.z - a.z) * alpha + this.errOffset.z;
       const eh = eyeHeight(b);
       cam.position.set(x, y + eh, z);
-      cam.rotation.set(Math.max(-1.55, Math.min(1.55, this.pitch + this.punchU)), this.yaw - this.punchR, 0);
+      cam.rotation.set(Math.max(-1.55, Math.min(1.55, this.pitch + this.punchU + this.kick)), this.yaw - this.punchR, 0);
       this.hud.setSpectate('');
       return;
     }
@@ -2078,15 +2129,21 @@ export class Game {
     return this.mapRenderer.lastRebuildMs;
   }
 
-  /** Только для разработки: манекен перед камерой — раны, разлёт головы, рэгдолл. */
-  debugDummy(opts: { team?: number; wounds?: number; explode?: boolean; kill?: boolean; dist?: number } = {}) {
+  /**
+   * Только для разработки: манекен перед камерой — раны, разрыв, рэгдолл.
+   * gib: 1 — голова вдребезги (как explode), 2 — частичный разрыв (mask — какие части, иначе 1–2 ближайшие
+   * к взрыву), 3 — полный. blast — расстояние от манекена до центра взрыва (м), fx: false — без огненного шара.
+   * side — сдвиг манекена вбок (м), чтобы поставить несколько рядом.
+   */
+  debugDummy(opts: { team?: number; wounds?: number; explode?: boolean; gib?: number; mask?: number; blast?: number; fx?: boolean; kill?: boolean; dist?: number; side?: number } = {}) {
     const team = opts.team ?? 1;
     const body = new VoxelBody(team, 0, 0, this.bodyMat);
     this.scene.add(body.group);
     body.setWeapon('rifle');
     const d = opts.dist ?? 2.2;
-    const x = this.pred.x - Math.sin(this.yaw) * d,
-      z = this.pred.z - Math.cos(this.yaw) * d;
+    const sd = opts.side ?? 0;
+    const x = this.pred.x - Math.sin(this.yaw) * d + Math.cos(this.yaw) * sd,
+      z = this.pred.z - Math.cos(this.yaw) * d - Math.sin(this.yaw) * sd;
     computePose(x, this.pred.y, z, this.yaw + Math.PI, 0, false, body.pose);
     body.applyPose(body.pose);
     body.group.updateMatrixWorld(true);
@@ -2108,9 +2165,28 @@ export class Game {
       }
     }
     const dir: [number, number, number] = [-Math.sin(this.yaw), 0.1, -Math.cos(this.yaw)];
-    if (opts.explode) body.explodeHead(this.debris, dir, this.settings.blood);
+    // степень разрыва: explode — старый флаг (голова), gib — 1 голова, 2 частично, 3 полностью
+    const gib = opts.gib ?? (opts.explode ? GIB_HEAD : 0);
+    // центр взрыва для частичного и полного разрыва: у ног манекена со стороны камеры, в blast метрах
+    const bd = opts.blast ?? 0.8;
+    const from: [number, number, number] = [x + Math.sin(this.yaw) * bd + (Math.random() - 0.5) * 0.4, this.pred.y + 0.2, z + Math.cos(this.yaw) * bd];
+    let mask = opts.mask ?? 0;
+    if (gib === GIB_FULL) mask = GIB_ALL_PARTS;
+    else if (gib === GIB_PARTIAL && !mask) {
+      // как на сервере: 1–2 части, ближайшие к взрыву
+      const near = [PART_HEAD, PART_ARM_L, PART_ARM_R, PART_LEG_L, PART_LEG_R]
+        .map((pt) => ({ pt, d: Math.hypot(body.pose[pt * POSE_STRIDE] - from[0], body.pose[pt * POSE_STRIDE + 1] - from[1], body.pose[pt * POSE_STRIDE + 2] - from[2]) }))
+        .sort((a, b) => a.d - b.d);
+      mask = (1 << near[0].pt) | (Math.random() < 0.5 ? 1 << near[1].pt : 0);
+    }
+    const blastHit = gib >= GIB_PARTIAL;
     if (opts.kill) {
-      body.ragdoll = new Ragdoll(this.info.map, body.pose, [dir[0] * 3.5, 0.8, dir[2] * 3.5], opts.explode ? 0 : 1, !!opts.explode);
+      const imp: [number, number, number] = blastHit ? [dir[0] * 3, 2.5, dir[2] * 3] : [dir[0] * 3.5, 0.8, dir[2] * 3.5];
+      body.ragdoll = new Ragdoll(this.info.map, body.pose, imp, gib === GIB_HEAD ? 0 : 1, gib === GIB_HEAD);
+    }
+    if (gib) body.gib(gib, mask, this.debris, dir, blastHit ? from : null, blastHit ? gibForce(false, bd) : 4, this.settings.blood);
+    if (blastHit && opts.fx !== false) this.explosionFx(from[0], from[1], from[2], false, d);
+    if (opts.kill) {
       const fake: CPlayer = { id: 100 + Math.floor(Math.random() * 1000), body, snaps: [], lastTick: 0, dead: true, stepAcc: 0, lastPos: [0, 0, 0], renderPos: [x, this.pred.y, z], renderYaw: 0, renderPitch: 0, renderCrouch: false, renderSpeed: 0, anim: new AgentAnimator() };
       this.players.set(fake.id, fake);
       if (this.st && !this.st.pl[fake.id]) (this.st.pl as any)[fake.id] = { i: fake.id, n: 'манекен', t: team, b: true, a: false, k: 0, d: 0, hp: 0, m: -1, w: 5, ag: 0, sk: 0, c: true, bomb: false };

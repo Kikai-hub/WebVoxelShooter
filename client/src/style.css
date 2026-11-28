@@ -546,6 +546,26 @@ input {
   font-weight: 800;
   letter-spacing: 0.1em;
 }
+.warmup-banner {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10, 12, 16, 0.7);
+  padding: 4px 14px;
+  font-family: var(--wide);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: #9fd3ff;
+  white-space: nowrap;
+}
+.warmup-banner:empty {
+  display: none;
+}
+.warmup-banner.countdown {
+  color: #ffb04a;
+  font-size: 18px;
+}
 .minimap-wrap {
   position: absolute;
   top: 12px;

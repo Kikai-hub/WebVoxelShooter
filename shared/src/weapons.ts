@@ -1,7 +1,7 @@
 // Оружие: характеристики общие для сервера, клиента и меню снаряжения.
 
 import { rand01 } from './rng';
-import { BTN_SCOPE } from './constants';
+import { BTN_SCOPE, DT } from './constants';
 
 export const SLOT_PRIMARY = 0;
 export const SLOT_PISTOL = 1;
@@ -51,6 +51,11 @@ export interface WeaponDef {
   speed: number;
   /** доля урона, остающаяся после каждых 10 м полёта пули: урон × falloff^(дальность / 10) */
   falloff: number;
+  /**
+   * Шанс разрыва головы при убийстве в голову (0..1). Задаётся таблицей `HEAD_EXPLODE` ниже.
+   * У дробовика это шанс при 3+ дробинах в голову вблизи: меньше дробин и больше дальность — меньше шанс.
+   */
+  headExplode: number;
   /** продаётся только этой стороне (0 — атака, 1 — защита) */
   team?: 0 | 1;
   /**
@@ -62,7 +67,7 @@ export interface WeaponDef {
 }
 
 // Ключи (osa, vikhr…) — внутренние и хранятся в снаряжении игроков: не менять. Названия — реальные.
-const RAW_WEAPONS: Omit<WeaponDef, 'pattern'>[] = [
+const RAW_WEAPONS: Omit<WeaponDef, 'pattern' | 'headExplode'>[] = [
   { id: 0, key: 'knife', name: 'Нож', kind: 'knife', slot: SLOT_KNIFE, price: 0, damage: 45, interval: 0.55, mag: 0, reserve: 0, reload: 0, spread: 0, moveSpread: 0, recoil: 0, recoilMax: 0, range: 1.9, armorPen: 0.85, auto: true, pellets: 1, killReward: 1500, speed: 1.05, falloff: 1 },
   { id: 1, key: 'osa', name: 'Glock-17', kind: 'pistol', slot: SLOT_PISTOL, price: 0, damage: 28, interval: 0.15, mag: 20, reserve: 100, reload: 2.2, spread: 0.006, moveSpread: 0.03, recoil: 0.012, recoilMax: 0.05, range: 200, armorPen: 0.5, auto: false, pellets: 1, killReward: 300, speed: 1.02, falloff: 0.8 },
   { id: 2, key: 'gyurza', name: 'Desert Eagle', kind: 'pistol', slot: SLOT_PISTOL, price: 700, damage: 55, interval: 0.26, mag: 7, reserve: 35, reload: 2.2, spread: 0.005, moveSpread: 0.05, recoil: 0.03, recoilMax: 0.08, range: 200, armorPen: 0.9, auto: false, pellets: 1, killReward: 300, speed: 1.0, falloff: 0.85 },
@@ -102,7 +107,8 @@ const RAW_WEAPONS: Omit<WeaponDef, 'pattern'>[] = [
  *   side — в какую сторону первый уход (1 — вправо, -1 — влево);
  * - lean — постоянный крен вбок на каждый выстрел подъёма (у каждого ствола свой характер).
  * Мелкая детерминированная «дрожь» добавляется по id оружия, чтобы паттерны не были идеальными синусоидами.
- * Автоматы и ПП — выраженный паттерн; пистолеты, дробовики и снайперки — без паттерна (старая модель).
+ * Автоматы и ПП — выраженный паттерн, пистолеты — только подъём при частой стрельбе;
+ * дробовики и снайперки — без паттерна (старая модель).
  */
 export interface SpraySpec {
   rise: number;
@@ -124,6 +130,12 @@ const SPRAY: Record<string, SpraySpec> = {
   mac10: { rise: 0.058, riseShots: 3.5, amp: 0.034, period: 7, start: 5, side: -1, lean: -0.0012 },
   ump: { rise: 0.056, riseShots: 4, amp: 0.028, period: 10, start: 6, side: 1, lean: 0.001 },
   skorpion: { rise: 0.045, riseShots: 3, amp: 0.03, period: 6, start: 4, side: -1, lean: 0.0005 },
+  // пистолеты: только подъём при частой стрельбе (без змейки), первый выстрел точный
+  osa: { rise: 0.05, riseShots: 5, amp: 0, period: 10, start: 99, side: 1, lean: 0.0006 },
+  beretta: { rise: 0.055, riseShots: 5, amp: 0, period: 10, start: 99, side: -1, lean: -0.0006 },
+  python: { rise: 0.09, riseShots: 3, amp: 0, period: 10, start: 99, side: 1, lean: 0.001 },
+  gyurza: { rise: 0.1, riseShots: 3, amp: 0, period: 10, start: 99, side: -1, lean: -0.001 },
+  sw29: { rise: 0.11, riseShots: 2.5, amp: 0, period: 10, start: 99, side: 1, lean: 0.001 },
 };
 
 /** Сгенерировать паттерн на n выстрелов: [вправо, вверх] в радианах. */
@@ -141,7 +153,31 @@ export function makePattern(spec: SpraySpec, n: number, salt: number): [number, 
   return out;
 }
 
-export const WEAPONS: WeaponDef[] = RAW_WEAPONS.map((w) => ({ ...w, pattern: SPRAY[w.key] ? makePattern(SPRAY[w.key], w.mag, w.id) : [] }));
+/**
+ * Шанс разрыва головы при убийстве в голову. Слабые пистолеты — почти никогда,
+ * крупный калибр и винтовки — заметно, снайперские — чаще всего. Нож и гранаты — 0
+ * (граната рвёт тело целиком, см. разрыв тела на сервере).
+ */
+const HEAD_EXPLODE: Record<string, number> = {
+  osa: 0.02, // Glock-17
+  beretta: 0.05,
+  python: 0.3,
+  gyurza: 0.35, // Desert Eagle
+  sw29: 0.4,
+  skorpion: 0.08,
+  mac10: 0.08,
+  shmel: 0.1, // MP5
+  ump: 0.12,
+  molot: 0.5, // Remington 870
+  sawedoff: 0.5,
+  m4a1: 0.3,
+  vikhr: 0.38, // АК-47
+  aug: 0.35,
+  sokol: 0.6, // Мосин-Наган
+  awm: 0.65,
+};
+
+export const WEAPONS: WeaponDef[] = RAW_WEAPONS.map((w) => ({ ...w, headExplode: HEAD_EXPLODE[w.key] ?? 0, pattern: SPRAY[w.key] ? makePattern(SPRAY[w.key], w.mag, w.id) : [] }));
 
 // индекс в массиве = id оружия (на это опираются клиент и протокол)
 WEAPONS.sort((a, b) => a.id - b.id);
@@ -257,21 +293,36 @@ export interface SprayState {
   idx: number;
   /** команд с последнего выстрела (до 255) */
   idle: number;
+  /**
+   * сколько команд серия держится после выстрела — берётся у оружия при выстреле (sprayHold).
+   * В снапшоте не передаётся: и сервер, и клиент ставят его сами при каждом выстреле.
+   */
+  hold: number;
 }
 
 export function newSpray(): SprayState {
-  return { idx: 0, idle: 255 };
+  return { idx: 0, idle: 255, hold: SPRAY_HOLD };
+}
+
+/**
+ * Удержание серии для оружия: у автоматов — SPRAY_HOLD; у полуавтоматов — интервал между
+ * выстрелами плюс ~0.2 с, иначе серия спадала бы между нажатиями и частая стрельба из
+ * пистолета не уводила бы прицел вверх (как в CS: «спам» неточен, редкие выстрелы точны).
+ */
+export function sprayHold(def: WeaponDef): number {
+  return def.auto ? SPRAY_HOLD : Math.max(SPRAY_HOLD, Math.round(def.interval / DT) + 12);
 }
 
 /** Шаг серии на каждую команду — до проверки выстрела. Не зависит от оружия в руках. */
 export function sprayTick(s: SprayState) {
   if (s.idle < 255) s.idle++;
-  if (s.idx > 0 && s.idle > SPRAY_HOLD && (s.idle - SPRAY_HOLD) % SPRAY_DECAY === 0) s.idx--;
+  if (s.idx > 0 && s.idle > s.hold && (s.idle - s.hold) % SPRAY_DECAY === 0) s.idx--;
 }
 
 /** Выстрел: возвращает номер этого выстрела в серии и продвигает серию. */
-export function sprayFire(s: SprayState): number {
+export function sprayFire(s: SprayState, hold = s.hold): number {
   const i = s.idx;
+  s.hold = hold;
   s.idx = Math.min(SPRAY_MAX, s.idx + 1);
   s.idle = 0;
   return i;

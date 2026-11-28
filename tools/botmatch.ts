@@ -36,7 +36,7 @@ console.log(`Тик: p99 ${p99.toFixed(3)} мс, максимум ${maxTick.toFi
 console.log(`Меткость: ${((room.stats.hits / Math.max(1, room.stats.shots)) * 100).toFixed(1)}% попаданий, хедшотов среди убийств ${((room.stats.headshots / Math.max(1, room.stats.kills)) * 100).toFixed(0)}%, выстрелов на убийство ${(room.stats.shots / Math.max(1, room.stats.kills)).toFixed(1)}`);
 console.log('Сыграно карт:', room.stats.mapsPlayed);
 console.log(`Гранат брошено: осколочных ${room.stats.nades[0]}, светошумовых ${room.stats.nades[1]}, дымовых ${room.stats.nades[2]}, зажигательных ${room.stats.nades[3]}; убийств гранатой (в т.ч. огнём) ${room.stats.nadeKills}; сильных ослеплений ${room.stats.blinded}`);
-console.log('Причины:', room.stats.reasons, 'убийств', room.stats.kills, 'хедшотов', room.stats.headshots, 'разлётов', room.stats.explodes);
+console.log('Причины:', room.stats.reasons, 'убийств', room.stats.kills, 'хедшотов', room.stats.headshots, 'разлётов головы', room.stats.explodes, 'разрывов тела: частичных', room.stats.gibsPartial, 'полных', room.stats.gibsFull);
 let ok = true;
 if (room.stats.matches < matches) {
   console.error('ОШИБКА: матчи не завершились за отведённое время');

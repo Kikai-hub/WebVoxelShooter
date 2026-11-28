@@ -399,6 +399,21 @@ export class Bot {
     const info = r.info;
     const rnd = () => this.rng.next();
     const b = r.bomb;
+    // разминка: бомбы нет — бродит по карте (точки, центр, база соперника) и стреляет во встречных
+    if (r.warm) {
+      const s = info.sites[this.rng.int(2)];
+      const z = info.spawnZones[1 - p.team];
+      const area = this.rng.int(3);
+      const pt =
+        area === 0
+          ? r.nav.randomIn(s.x0, s.z0, s.x1, s.z1, rnd)
+          : area === 1
+            ? r.nav.randomIn(info.mid[0] - 6, info.mid[1] - 6, info.mid[0] + 6, info.mid[1] + 6, rnd)
+            : r.nav.randomIn(z.x0, z.z0, z.x1, z.z1, rnd);
+      const [gx, gz] = pt ?? [info.mid[0], info.mid[1]];
+      this.setGoal(gx, gz, 'investigate', 25, yawTo(gx - p.st.x, gz - p.st.z));
+      return;
+    }
     if (p.team === TEAM_T) {
       if (b.status === 'planted') {
         const pt = r.nav.randomIn(b.x - 6, b.z - 6, b.x + 6, b.z + 6, rnd) ?? [b.x, b.z];

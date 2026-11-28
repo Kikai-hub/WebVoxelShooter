@@ -1,10 +1,11 @@
 // Воксельное тело игрока: 6 частей, каждая — InstancedMesh из вокселей 6 см.
-// Раны вырезают воксели (под ними тёмное мясо), голова может разлететься,
-// после смерти тело падает рэгдоллом и лежит до конца раунда.
+// Раны вырезают воксели (под ними тёмное мясо), голова или любая часть может разлететься
+// (пуля в голову, граната, бомба), после смерти тело падает рэгдоллом и лежит до конца раунда.
 
 import * as THREE from 'three';
 import {
   BVOX,
+  GIB_HEAD,
   PART_ARM_L,
   PART_ARM_R,
   PART_COUNT,
@@ -27,6 +28,10 @@ import { disposeKnife, KNIFE_OF_TEAM, makeKnife } from './knifeModels';
 const FLESH = 0x5a0f0f;
 const WOUND_RING = 0x7a0d0d;
 const BLOOD = 0x9b1010;
+const CONFETTI = [0xff4fa0, 0x4fd2ff, 0xffe14f, 0x7dff4f];
+const confettiColor = () => CONFETTI[(Math.random() * 4) | 0];
+
+type V3 = [number, number, number];
 
 function shade(c: number, k: number): number {
   const r = Math.min(255, ((c >> 16) & 255) * k),
@@ -122,7 +127,11 @@ export class VoxelBody {
   private rot = new THREE.Matrix4();
   pose = new Float32Array(POSE_SIZE);
   ragdoll: Ragdoll | null = null;
-  headGone = false;
+  /** оторванные части (1 — разлетелась) */
+  readonly gone = new Uint8Array(PART_COUNT);
+  get headGone(): boolean {
+    return this.gone[PART_HEAD] === 1;
+  }
   woundCount = 0;
 
   constructor(
@@ -350,7 +359,7 @@ export class VoxelBody {
             }
             if (debris && Math.random() < 0.7) {
               this.localToWorld(part, x, y, z, v);
-              const c = confetti ? [0xff4fa0, 0x4fd2ff, 0xffe14f, 0x7dff4f][(Math.random() * 4) | 0] : Math.random() < 0.5 ? BLOOD : pm.colors[i];
+              const c = confetti ? confettiColor() : Math.random() < 0.5 ? BLOOD : pm.colors[i];
               debris.spawn(v.x, v.y, v.z, (Math.random() - 0.5) * 2.5, Math.random() * 2.5 + (exit ? 1 : 0.3), (Math.random() - 0.5) * 2.5, c, -1);
             }
           } else if (d <= ring && pm.alive[i] && pm.shown[i] && !confetti) {
@@ -364,40 +373,132 @@ export class VoxelBody {
     if (pm.mesh.instanceColor) pm.mesh.instanceColor.needsUpdate = true;
   }
 
-  /** Разлёт головы на кубики. */
-  explodeHead(debris: Debris, dir: [number, number, number], bloodMode: string) {
-    if (this.headGone) return;
-    this.headGone = true;
-    const pm = this.parts[PART_HEAD];
-    const v = new THREE.Vector3();
+  /** Разлёт головы на кубики (пуля в голову): каждый воксель — отдельный кубик, как раньше. */
+  explodeHead(debris: Debris, dir: V3, bloodMode: string) {
+    this.explodePart(PART_HEAD, debris, dir, 4, bloodMode, null, 1, 40);
+  }
+
+  /**
+   * Разлёт части тела кусками: воксели собираются в кубы chunk×chunk×chunk (2 — до 8 вокселей в куске),
+   * каждый кусок — одна частица Debris. Направление — от центра взрыва from (если есть), иначе dir;
+   * force — скорость разлёта, м/с. При загруженном Debris куски автоматически крупнее.
+   * На месте отрыва у оставшегося тела — открытая рана, звенья рэгдолла отцепляются.
+   */
+  explodePart(part: number, debris: Debris, dir: V3, force: number, bloodMode: string, from: V3 | null = null, chunk = 2, blood = 10) {
+    if (this.gone[part]) return;
+    this.gone[part] = 1;
+    const pm = this.parts[part];
     const confetti = bloodMode === 'confetti';
-    for (let z = 0; z < pm.nz; z++)
-      for (let y = 0; y < pm.ny; y++)
-        for (let x = 0; x < pm.nx; x++) {
-          const i = x + pm.nx * (y + pm.ny * z);
-          if (!pm.alive[i]) continue;
-          pm.alive[i] = 0;
-          this.localToWorld(PART_HEAD, x, y, z, v);
-          const sp = 2 + Math.random() * 4;
-          const c = confetti ? [0xff4fa0, 0x4fd2ff, 0xffe14f, 0x7dff4f][(Math.random() * 4) | 0] : pm.colors[i] === FLESH ? (Math.random() < 0.5 ? BLOOD : FLESH) : pm.colors[i];
-          debris.spawn(v.x, v.y, v.z, dir[0] * sp + (Math.random() - 0.5) * 4, dir[1] * sp + Math.random() * 3.5, dir[2] * sp + (Math.random() - 0.5) * 4, c, -1);
-          pm.mesh.setMatrixAt(i, this.zero);
+    // под нагрузкой (много свежих частиц) — куски крупнее: 3³ вместо 2³ вокселей — втрое меньше частиц
+    const load = debris.load();
+    const c = load > 0.6 ? chunk + 2 : load > 0.3 ? chunk + 1 : chunk;
+    const v = this.tmpV;
+    const dl = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    for (let bz = 0; bz < pm.nz; bz += c)
+      for (let by = 0; by < pm.ny; by += c)
+        for (let bx = 0; bx < pm.nx; bx += c) {
+          let n = 0,
+            sx = 0,
+            sy = 0,
+            sz = 0,
+            col = -1;
+          for (let z = bz; z < Math.min(pm.nz, bz + c); z++)
+            for (let y = by; y < Math.min(pm.ny, by + c); y++)
+              for (let x = bx; x < Math.min(pm.nx, bx + c); x++) {
+                const i = x + pm.nx * (y + pm.ny * z);
+                if (!pm.alive[i]) continue;
+                // цвет куска — с поверхности (одежда, кожа), если она в куске есть
+                if (pm.shown[i] && (col < 0 || col === FLESH)) col = pm.colors[i];
+                pm.alive[i] = 0;
+                pm.shown[i] = 0;
+                pm.mesh.setMatrixAt(i, this.zero);
+                this.localToWorld(part, x, y, z, v);
+                sx += v.x;
+                sy += v.y;
+                sz += v.z;
+                n++;
+              }
+          if (!n) continue;
+          const px = sx / n,
+            py = sy / n,
+            pz = sz / n;
+          let ux: number, uy: number, uz: number;
+          if (from) {
+            ux = px - from[0];
+            uy = py - from[1];
+            uz = pz - from[2];
+            const l = Math.hypot(ux, uy, uz) || 1;
+            ux /= l;
+            uy = (uy / l) * 0.6 + 0.55; // взрыв подбрасывает вверх
+            uz /= l;
+          } else {
+            ux = dir[0] / dl;
+            uy = dir[1] / dl;
+            uz = dir[2] / dl;
+          }
+          const sp = force * (0.55 + Math.random() * 0.75);
+          const jit = force * 0.9;
+          const color = confetti ? confettiColor() : col < 0 || col === FLESH ? (Math.random() < 0.5 ? BLOOD : FLESH) : Math.random() < 0.15 ? BLOOD : col;
+          // размер куска по числу вокселей в нём (неполный кусок — меньше)
+          const size = Math.max(1, c * Math.cbrt(n / (c * c * c)));
+          debris.spawn(px, py, pz, ux * sp + (Math.random() - 0.5) * jit, uy * sp + Math.random() * force * 0.7, uz * sp + (Math.random() - 0.5) * jit, color, -1, size);
         }
-    // дополнительные брызги крови
-    for (let k = 0; k < 40; k++) {
-      this.localToWorld(PART_HEAD, 3, 0, 3, v);
-      debris.spawn(v.x, v.y, v.z, dir[0] * 3 + (Math.random() - 0.5) * 5, Math.random() * 4, dir[2] * 3 + (Math.random() - 0.5) * 5, confetti ? 0xffe14f : BLOOD, -1);
-    }
     pm.mesh.instanceMatrix.needsUpdate = true;
-    // открыть шею
+    // брызги крови из места отрыва
+    const nb = load > 0.5 ? blood >> 2 : blood;
+    this.localToWorld(part, (pm.nx - 1) / 2, part === PART_HEAD ? 0 : (pm.ny - 1) / 2, (pm.nz - 1) / 2, v);
+    const bx = from ? v.x - from[0] : dir[0],
+      bz = from ? v.z - from[2] : dir[2];
+    const bl = Math.hypot(bx, bz) || 1;
+    for (let k = 0; k < nb; k++) {
+      const s2 = Math.min(force, 6) * (0.4 + Math.random() * 0.6);
+      debris.spawn(v.x, v.y, v.z, (bx / bl) * s2 + (Math.random() - 0.5) * 5, Math.random() * 4, (bz / bl) * s2 + (Math.random() - 0.5) * 5, confetti ? confettiColor() : BLOOD, -1);
+    }
+    this.openStump(part, confetti);
+    this.ragdoll?.detach(part);
+  }
+
+  /**
+   * Разрыв тела по событию убийства: level — GIB_* (1 — голова от пули, 2 — части из mask, 3 — все части),
+   * from — центр взрыва, force — скорость разлёта. Для трупа у опоздавших force маленькая: куски просто ложатся.
+   */
+  gib(level: number, mask: number, debris: Debris, dir: V3, from: V3 | null, force: number, bloodMode: string) {
+    if (level === GIB_HEAD) {
+      if (force >= 2) this.explodeHead(debris, dir, bloodMode);
+      else this.explodePart(PART_HEAD, debris, dir, force, bloodMode, null, 2, 4);
+      return;
+    }
+    // сначала голова и конечности, торс последним
+    for (const p of [PART_HEAD, PART_ARM_L, PART_ARM_R, PART_LEG_L, PART_LEG_R, PART_TORSO])
+      if (mask & (1 << p)) this.explodePart(p, debris, dir, force, bloodMode, from, 2, force >= 2 ? (p === PART_TORSO ? 16 : 8) : 2);
+  }
+
+  /** Открытая рана у оставшегося тела на месте оторванной части (как шея при разлёте головы). */
+  private openStump(part: number, confetti: boolean) {
+    if (part === PART_TORSO || this.gone[PART_TORSO]) return;
     const torso = this.parts[PART_TORSO];
-    for (let z = 1; z < torso.nz - 1; z++)
-      for (let x = 2; x < torso.nx - 2; x++) {
-        const i = x + torso.nx * (torso.ny - 1 + torso.ny * z);
-        torso.mesh.setColorAt(i, this.col.set(WOUND_RING));
-      }
+    const mark = (x: number, y: number, z: number) => {
+      const i = x + torso.nx * (y + torso.ny * z);
+      if (!torso.alive[i]) return;
+      torso.mesh.setColorAt(i, this.col.set(confetti ? confettiColor() : Math.random() < 0.7 ? WOUND_RING : FLESH));
+    };
+    const top = torso.ny - 1;
+    if (part === PART_HEAD) {
+      for (let z = 1; z < torso.nz - 1; z++) for (let x = 2; x < torso.nx - 2; x++) mark(x, top, z);
+    } else if (part === PART_ARM_L || part === PART_ARM_R) {
+      // плечо: боковая грань торса у верха и край верхней грани
+      const x = part === PART_ARM_L ? 0 : torso.nx - 1;
+      for (let y = top - 3; y <= top; y++) for (let z = 0; z < torso.nz; z++) mark(x, y, z);
+      for (let z = 0; z < torso.nz; z++) mark(part === PART_ARM_L ? 1 : torso.nx - 2, top, z);
+    } else {
+      // бедро: низ торса над ногой
+      const x0 = part === PART_LEG_L ? 0 : torso.nx / 2;
+      for (let x = x0; x < x0 + torso.nx / 2; x++) for (let z = 0; z < torso.nz; z++) mark(x, 0, z);
+    }
     if (torso.mesh.instanceColor) torso.mesh.instanceColor.needsUpdate = true;
   }
+
+  private tmpV = new THREE.Vector3();
 
   dispose() {
     this.group.removeFromParent();

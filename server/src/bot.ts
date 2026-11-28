@@ -16,6 +16,7 @@ import {
   Rng,
   SLOT_PISTOL,
   SLOT_PRIMARY,
+  sprayKick,
   TEAM_CT,
   TEAM_T,
   inRect,
@@ -33,10 +34,10 @@ import type { Player, Room } from './room';
 export const BOT_NAMES = ['Алмаз', 'Буран', 'Ветер', 'Гром', 'Дюна', 'Ёрш', 'Жук', 'Зной', 'Искра', 'Кедр', 'Лис', 'Мираж', 'Нерпа', 'Оникс', 'Пума', 'Рысь', 'Сокол', 'Тайга', 'Ураган', 'Филин'];
 
 /** Настройки уровня. По умолчанию — средний. */
-export const BOT_LEVELS: Record<string, { react: [number, number]; aimErr: [number, number]; errDecay: number; sway: number; turnRate: number; headChance: number; fov: number; stopToShoot: number; pause: [number, number] }> = {
-  easy: { react: [0.7, 1.1], aimErr: [0.18, 0.3], errDecay: 0.9, sway: 0.05, turnRate: 4, headChance: 0.02, fov: 1.0, stopToShoot: 0.5, pause: [0.5, 0.9] },
-  medium: { react: [0.5, 0.8], aimErr: [0.12, 0.22], errDecay: 1.3, sway: 0.035, turnRate: 6, headChance: 0.05, fov: 1.15, stopToShoot: 0.75, pause: [0.35, 0.7] },
-  hard: { react: [0.25, 0.4], aimErr: [0.06, 0.12], errDecay: 2.6, sway: 0.016, turnRate: 9, headChance: 0.2, fov: 1.3, stopToShoot: 0.85, pause: [0.2, 0.45] },
+export const BOT_LEVELS: Record<string, { react: [number, number]; aimErr: [number, number]; errDecay: number; sway: number; turnRate: number; headChance: number; sprayComp: number; fov: number; stopToShoot: number; pause: [number, number] }> = {
+  easy: { react: [0.7, 1.1], aimErr: [0.18, 0.3], errDecay: 0.9, sway: 0.05, turnRate: 4, headChance: 0.02, sprayComp: 0.75, fov: 1.0, stopToShoot: 0.5, pause: [0.5, 0.9] },
+  medium: { react: [0.5, 0.8], aimErr: [0.12, 0.22], errDecay: 1.3, sway: 0.035, turnRate: 6, headChance: 0.05, sprayComp: 0.9, fov: 1.15, stopToShoot: 0.75, pause: [0.35, 0.7] },
+  hard: { react: [0.25, 0.4], aimErr: [0.06, 0.12], errDecay: 2.6, sway: 0.016, turnRate: 9, headChance: 0.2, sprayComp: 0.95, fov: 1.3, stopToShoot: 0.85, pause: [0.2, 0.45] },
 };
 
 /** y — высота ног у цели (крыша, площадка); без неё — нижний уровень. */
@@ -564,8 +565,14 @@ export class Bot {
       }
       this.swayY += (this.swayTY - this.swayY) * 0.15;
       this.swayP += (this.swayTP - this.swayP) * 0.15;
-      const wantYaw = yawTo(dx, dz) + this.errYaw + this.swayY;
-      const wantPitch = Math.atan2(dy, dist) + this.errPitch + this.swayP;
+      // паттерн очереди: бот тянет прицел против отдачи, но лишь частично (сила ботов не растёт)
+      const wDef = (slot === SLOT_PRIMARY ? p.primary?.def : p.pistol.def) ?? p.pistol.def;
+      const kick = sprayKick(wDef, p.spray.idx);
+      // вертикаль гасит почти полностью (иначе подъём сам переводит прицел с корпуса в голову),
+      // вбок — хуже: змейка остаётся источником промахов
+      const comp = this.lv.sprayComp;
+      const wantYaw = yawTo(dx, dz) + this.errYaw + this.swayY + kick[0] * comp * 0.6;
+      const wantPitch = Math.atan2(dy, dist) + this.errPitch + this.swayP - kick[1] * comp;
       const decay = Math.exp(-DT * this.lv.errDecay);
       this.errYaw *= decay;
       this.errPitch *= decay;

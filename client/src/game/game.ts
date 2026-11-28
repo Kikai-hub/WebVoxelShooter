@@ -63,6 +63,16 @@ import {
   raycastBody,
   raycastMap,
   shotDirection,
+  type SprayState,
+  newSpray,
+  sprayTick,
+  sprayFire,
+  spraySync,
+  sprayKick,
+  sprayCone,
+  moveSpeedMul,
+  SPRAY_HOLD,
+  BTN_SCOPE,
   stepPlayer,
   viewDirection,
   type FullState,
@@ -90,6 +100,7 @@ import { MAT_COLORS } from './atlas';
 import { Ragdoll } from './ragdoll';
 import { ViewModel } from './viewmodel';
 import { DropsView, FireView, NadeView, SmokeView } from './nades';
+import { ExplosionFx } from './explosionFx';
 import { VoxelBody } from './voxelBody';
 
 interface Snap {
@@ -130,6 +141,9 @@ function lerpAngle(a: number, b: number, t: number): number {
 
 /** Высота раны над ногами по части тела (голова, торс, руки, ноги), м */
 const WOUND_HEIGHT = [1.65, 1.15, 1.2, 1.2, 0.45, 0.45];
+
+/** Какую долю смещения паттерна очереди показывает отдача камеры. */
+const PUNCH_SHARE = 0.5;
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -176,7 +190,15 @@ export class Game {
   private errOffset = new THREE.Vector3();
   private simTime = 0;
   private localNextFire = 0;
-  private localRecoil = 0;
+  /** серия выстрелов — тот же счётчик, что у сервера (сверяется по снапшоту, см. reconcile) */
+  private spray: SprayState = newSpray();
+  /** команды, на которых клиент предсказал выстрел (для переигрывания серии) */
+  private firedSeqs = new Set<number>();
+  /** отдача камеры: текущий и целевой сдвиг взгляда [вправо, вверх], рад */
+  private punchR = 0;
+  private punchU = 0;
+  private punchTR = 0;
+  private punchTU = 0;
   private lastButtons = 0;
   private sentCmds: UserCmd[] = [];
 
@@ -250,6 +272,8 @@ export class Game {
     container.appendChild(this.wrap);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    // вьюмодель: магазин вырезается из модели оружия плоскостями отсечения
+    this.renderer.localClippingEnabled = true;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -280,7 +304,7 @@ export class Game {
         this.sfx.nadeBounce(Math.hypot(x - c.x, y - c.y, z - c.z), this.panOf(x, z), speed);
       },
     );
-    this.scene.add(this.nadeView.group, this.smokeView.mesh, this.fireView.mesh, this.dropsView.group);
+    this.scene.add(this.nadeView.group, this.smokeView.mesh, this.fireView.mesh, this.dropsView.group, this.explosions.mesh, this.explosions.light);
 
     this.bombMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.18, 0.26), new THREE.MeshLambertMaterial({ color: 0x3b3f2a }));
     const screen = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.1), new THREE.MeshBasicMaterial({ color: 0xff2020 }));
@@ -319,6 +343,9 @@ export class Game {
   private nadeView: NadeView;
   private smokeView = new SmokeView();
   private fireView = new FireView();
+  private explosions = new ExplosionFx();
+  private shakeAmp = 0;
+  private shakeDecay = 4;
   private dropsView = new DropsView();
   private nades: number[] = [0, 0, 0, 0];
   private hasKit = false;
@@ -603,14 +630,19 @@ export class Game {
     st.onGround = (own.flags & SF_ONGROUND) !== 0;
     st.crouch = (own.flags & SF_CROUCH) !== 0;
     if (!alive) {
+      this.spray.idx = own.sprayIdx;
+      this.spray.idle = own.sprayIdle;
+      this.firedSeqs.clear();
+      this.punchTR = this.punchTU = 0;
       copyPState(this.pred, st);
       copyPState(this.prevPred, st);
       this.predAlive = false;
       this.errOffset.set(0, 0, 0);
       return;
     }
-    const speedMul = WEAPONS[own.weapon]?.speed ?? 1;
-    for (const c of this.pending) stepPlayer(st, c.buttons, c.yaw, this.info.map, this.canMove, speedMul);
+    const wdef = WEAPONS[own.weapon] ?? WEAPONS[1];
+    for (const c of this.pending) stepPlayer(st, c.buttons, c.yaw, this.info.map, this.canMove, moveSpeedMul(wdef, c.buttons));
+    this.reconcileSpray(own.sprayIdx, own.sprayIdle);
     const ex = this.pred.x - st.x,
       ey = this.pred.y - st.y,
       ez = this.pred.z - st.z;
@@ -625,6 +657,30 @@ export class Game {
     }
     copyPState(this.pred, st);
     this.predAlive = true;
+  }
+
+  /**
+   * Серия выстрелов: берём состояние сервера после команды ackSeq и переигрываем поверх
+   * неподтверждённые команды (тик серии + выстрел там, где клиент его предсказал).
+   * Пока предсказания совпадают с сервером, результат равен локальному счётчику;
+   * если сервер выбросил команды или не дал выстрелить — номер выстрела выравнивается.
+   */
+  private reconcileSpray(idx: number, idle: number) {
+    const first = this.pending.length ? this.pending[0].seq : this.seq + 1;
+    for (const q of this.firedSeqs) if (q < first) this.firedSeqs.delete(q);
+    spraySync(this.spray, idx, idle, this.pending.map((c) => c.seq), this.firedSeqs);
+  }
+
+  /** Отдача камеры: за выстрелом взгляд догоняет долю паттерна, после очереди плавно возвращается. */
+  private stepPunch() {
+    if (this.spray.idle > SPRAY_HOLD) {
+      const k = Math.exp(-DT * 9);
+      this.punchTR *= k;
+      this.punchTU *= k;
+    }
+    const a = 1 - Math.exp(-DT * 35);
+    this.punchR += (this.punchTR - this.punchR) * a;
+    this.punchU += (this.punchTU - this.punchU) * a;
   }
 
   /** полное состояние, пришедшее раньше списка игроков (вход посреди раунда) */
@@ -830,14 +886,13 @@ export class Game {
         break;
       case 'explode': {
         this.sfx.explosion();
-        for (let i = 0; i < 160; i++) {
-          const c = [0xffb03a, 0xff6a1a, 0x5a5048, 0x2e2a26][i % 4];
-          this.debris.spawn(e.p[0], e.p[1] + 0.3, e.p[2], (Math.random() - 0.5) * 18, Math.random() * 14, (Math.random() - 0.5) * 18, c, 2 + Math.random() * 3, 3);
-        }
+        this.explosionFx(e.p[0], e.p[1], e.p[2], true, Math.hypot(e.p[0] - eye.x, e.p[1] - eye.y, e.p[2] - eye.z));
         break;
       }
       case 'roundStart':
         this.blood.clear();
+        this.explosions.clear();
+        this.shakeAmp = 0;
         this.faceSpawnDirection();
         this.slot = this.priId >= 0 ? SLOT_PRIMARY : SLOT_PISTOL;
         this.buyOpen = false;
@@ -887,10 +942,7 @@ export class Game {
         const d = Math.hypot(x - eye.x, y - eye.y, z - eye.z);
         if (e.type === 0) {
           this.sfx.grenade(d, this.panOf(x, z));
-          for (let i = 0; i < 70; i++) {
-            const c = [0xffb03a, 0xff6a1a, 0x5a5048, 0x3a332c][i % 4];
-            this.debris.spawn(x, y + 0.2, z, (Math.random() - 0.5) * 12, Math.random() * 9, (Math.random() - 0.5) * 12, c, 1 + Math.random() * 2, 1.8);
-          }
+          this.explosionFx(x, y, z, false, d);
           for (let i = 0; i < 14; i++) {
             const a = Math.random() * Math.PI * 2;
             this.markImpact([x, y + 0.2, z], [x + Math.cos(a) * 3, y - 0.6, z + Math.sin(a) * 3]);
@@ -968,6 +1020,16 @@ export class Game {
       case 'pickup':
         if (e.s === this.myId) this.sfx.click(700, 0.05, 0.2);
         break;
+      case 'swing': {
+        // чужой взмах ножом: звук по расстоянию и анимация (свой уже озвучен в predictFire)
+        if (e.s === this.myId && this.predAlive) break;
+        if (!this.predAlive && e.s === this.specTarget) this.vm.fire();
+        const sp = this.players.get(e.s);
+        sp?.anim.fire('knife');
+        const rp = sp?.renderPos;
+        if (rp) this.sfx.knifeSwing(Math.hypot(rp[0] - eye.x, rp[1] + 1 - eye.y, rp[2] - eye.z), this.panOf(rp[0], rp[2]));
+        break;
+      }
       case 'reload':
         {
           const own = e.s === this.myId || (!this.predAlive && e.s === this.specTarget);
@@ -1008,6 +1070,65 @@ export class Game {
       const col = Math.random() < 0.5 ? base : [0xcbb38a, 0x9a8a72, 0xe0cfa8][Math.floor(Math.random() * 3)];
       for (let i = 0; i < 4; i++) this.debris.spawn(px + h.nx * 0.05, py + h.ny * 0.05, pz + h.nz * 0.05, h.nx * 1.5 + (Math.random() - 0.5) * 1.5, h.ny * 1.5 + Math.random() * 1.5, h.nz * 1.5 + (Math.random() - 0.5) * 1.5, col, 1.5 + Math.random(), 0.8);
     }
+  }
+
+  /**
+   * Визуал взрыва (HE и бомба): огненный шар + вспышка + кольцо (ExplosionFx), искры, осколки блока под
+   * точкой взрыва, тряска камеры и звон в ушах по расстоянию d до камеры.
+   */
+  private explosionFx(x: number, y: number, z: number, bomb: boolean, d: number) {
+    this.explosions.spawn(x, y, z, bomb, performance.now() / 1000);
+    // цвет блока под взрывом
+    let ground = 0xcbb38a;
+    if (raycastMap(this.info.map, x, y + 0.4, z, 0, -1, 0, 2, this.mapHit)) ground = MAT_COLORS[this.mapHit.mat] ?? ground;
+    const sparks = bomb ? 70 : 34;
+    const chunks = bomb ? 60 : 28;
+    const sp = bomb ? 1.6 : 1;
+    for (let i = 0; i < sparks; i++) {
+      const c = i % 3 === 0 ? 0xffe9a0 : i % 3 === 1 ? 0xffa020 : 0xff6a1a;
+      const a = Math.random() * Math.PI * 2,
+        r = (6 + Math.random() * 10) * sp;
+      this.debris.spawn(x, y + 0.3, z, Math.cos(a) * r, (4 + Math.random() * 9) * sp, Math.sin(a) * r, c, 0.5 + Math.random() * 0.6, 0.5 + Math.random() * 0.5);
+    }
+    for (let i = 0; i < chunks; i++) {
+      const a = Math.random() * Math.PI * 2,
+        r = (3 + Math.random() * 7) * sp;
+      const col = i % 4 === 0 ? 0x3a332c : ground;
+      this.debris.spawn(x, y + 0.2, z, Math.cos(a) * r, (5 + Math.random() * 8) * sp, Math.sin(a) * r, col, 1.4 + Math.random() * 1.6, 1 + Math.random() * 1.6);
+    }
+    // тряска: у бомбы сильнее и дольше
+    const reach = bomb ? 45 : 18;
+    const k = Math.max(0, 1 - d / reach);
+    const amp = (bomb ? 0.075 : 0.035) * k * k + (k > 0 ? 0.004 : 0);
+    if (amp > this.shakeAmp) {
+      this.shakeAmp = amp;
+      this.shakeDecay = bomb ? 2.6 : 4.5;
+    }
+    // звон в ушах — только вблизи
+    const earReach = bomb ? 22 : 7;
+    if (d < earReach) this.sfx.earRing(1 - d / earReach);
+  }
+
+  private applyShake(dt: number) {
+    if (this.shakeAmp <= 0.0005) {
+      this.shakeAmp = 0;
+      return;
+    }
+    const t = performance.now() / 1000;
+    this.camera.rotation.x += Math.sin(t * 61) * this.shakeAmp;
+    this.camera.rotation.y += Math.sin(t * 47 + 1.3) * this.shakeAmp;
+    this.camera.rotation.z += Math.sin(t * 53 + 2.1) * this.shakeAmp * 0.6;
+    this.shakeAmp *= Math.exp(-dt * this.shakeDecay);
+  }
+
+  /** Только для разработки: взрыв перед камерой на расстоянии dist (м); bomb — как бомба. */
+  debugExplosion(opts: { dist?: number; bomb?: boolean } = {}) {
+    const d = opts.dist ?? 6;
+    const x = this.pred.x - Math.sin(this.yaw) * d,
+      z = this.pred.z - Math.cos(this.yaw) * d;
+    this.explosionFx(x, this.pred.y + 0.1, z, !!opts.bomb, d);
+    if (opts.bomb) this.sfx.explosion();
+    else this.sfx.grenade(d, 0);
   }
 
   private panOf(x: number, z: number): number {
@@ -1452,6 +1573,7 @@ export class Game {
     if (this.held('drop')) b |= BTN_DROP;
     if (this.mouseDown || this.fireTap) b |= BTN_FIRE;
     if (this.altDown && this.slot >= 3) b |= BTN_ALT_FIRE;
+    if (this.isScoped()) b |= BTN_SCOPE;
     return b;
   }
 
@@ -1468,13 +1590,14 @@ export class Game {
     const cmd: UserCmd = { seq: ++this.seq, buttons, yaw: this.yaw, pitch: this.pitch, slot: this.slot, viewTick };
     if (this.predAlive) {
       copyPState(this.prevPred, this.pred);
-      const speedMul = WEAPONS[this.own?.weapon ?? 1]?.speed ?? 1;
+      const speedMul = moveSpeedMul(WEAPONS[this.own?.weapon ?? 1] ?? WEAPONS[1], buttons);
       stepPlayer(this.pred, buttons, this.yaw, this.info.map, this.canMove, speedMul);
       this.pending.push(cmd);
       if (this.pending.length > 128) this.pending.shift();
       this.simTime += DT;
-      this.localRecoil *= Math.exp(-DT * 6);
+      sprayTick(this.spray);
       this.predictFire(cmd);
+      this.stepPunch();
       // свои шаги
       const sp = Math.hypot(this.pred.vx, this.pred.vz);
       if (this.pred.onGround && sp > 3.5) {
@@ -1531,8 +1654,13 @@ export class Game {
     if (this.slot !== def.slot) return;
     this.localNextFire = this.simTime + def.interval;
     const speed = Math.hypot(this.pred.vx, this.pred.vz);
-    const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + this.localRecoil * (this.pred.crouch ? 0.7 : 1);
-    this.localRecoil = Math.min(this.localRecoil + def.recoil, def.recoilMax);
+    const si = sprayFire(this.spray);
+    this.firedSeqs.add(cmd.seq);
+    const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + sprayCone(def, si) * (this.pred.crouch ? 0.7 : 1);
+    const kick = sprayKick(def, si);
+    // взгляд поднимается на половину смещения: пули уходят выше перекрестья — как в CS
+    this.punchTR = kick[0] * PUNCH_SHARE;
+    this.punchTU = kick[1] * PUNCH_SHARE;
     this.vm.fire();
     this.sfx.shot(def.kind, 0, 0, def.key);
     if (def.kind === 'knife') return;
@@ -1541,7 +1669,7 @@ export class Game {
       ez = this.pred.z;
     const seed = this.myId * 1000003 + cmd.seq;
     for (let k = 0; k < def.pellets; k++) {
-      const d = shotDirection(cmd.yaw, cmd.pitch, spread, seed, k, this.dir);
+      const d = shotDirection(cmd.yaw, cmd.pitch, spread, seed, k, this.dir, kick);
       let t = def.range;
       let hitMap = false;
       if (raycastMap(this.info.map, ex, ey, ez, d[0], d[1], d[2], t, this.mapHit)) {
@@ -1645,6 +1773,8 @@ export class Game {
     this.blood.update(performance.now() / 1000);
     this.smokeView.update(now);
     this.fireView.update(now);
+    this.explosions.update(now);
+    this.applyShake(dt);
     this.dropsView.sync(this.st?.drops ?? [], now);
     this.tracers.update(dt);
     this.updateBomb(now);
@@ -1817,7 +1947,7 @@ export class Game {
       const z = a.z + (b.z - a.z) * alpha + this.errOffset.z;
       const eh = eyeHeight(b);
       cam.position.set(x, y + eh, z);
-      cam.rotation.set(this.pitch, this.yaw, 0);
+      cam.rotation.set(Math.max(-1.55, Math.min(1.55, this.pitch + this.punchU)), this.yaw - this.punchR, 0);
       this.hud.setSpectate('');
       return;
     }
@@ -1915,7 +2045,7 @@ export class Game {
     }
     const def = own ? WEAPONS[own.weapon] : undefined;
     const sp = Math.hypot(this.pred.vx, this.pred.vz);
-    const spread = def ? def.spread + (sp / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + this.localRecoil : 0.01;
+    const spread = def ? def.spread + (sp / RUN_SPEED) * def.moveSpread + (this.pred.onGround ? 0 : 0.08) + sprayCone(def, this.spray.idx) : 0.01;
     this.hud.setCrosshair(spread, alive && !this.isScoped());
     this.hud.setNet(`${Math.round(1000 / this.fpsAvg)} FPS · пинг ${Math.round(this.ping)} мс${this.resScale < 1 ? ' · масштаб ' + Math.round(this.resScale * 100) + '%' : ''}${this.connected ? '' : ' · нет связи'}`);
     this.hud.showBoard(this.boardOpen, this.st, this.myId);

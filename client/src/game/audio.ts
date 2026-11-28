@@ -140,6 +140,8 @@ const ROUND_SYNTH: Record<RoundSound, { wave: OscillatorType; gain: number; note
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  private earLp: BiquadFilterNode | null = null;
+  private earUntil = 0;
   private noise: AudioBuffer | null = null;
   volume = 0.7;
   /** сырые файлы (скачиваются сразу) и раскодированные буферы (после создания AudioContext) */
@@ -498,7 +500,11 @@ export class Sfx {
       try {
         this.ctx = new AudioContext();
         this.master = this.ctx.createGain();
-        this.master.connect(this.ctx.destination);
+        // фильтр «звона в ушах» на выходе master; в покое полностью открыт (22 кГц)
+        this.earLp = this.ctx.createBiquadFilter();
+        this.earLp.type = 'lowpass';
+        this.earLp.frequency.value = 22000;
+        this.master.connect(this.earLp).connect(this.ctx.destination);
         const len = this.ctx.sampleRate * 0.5;
         this.noise = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
         const d = this.noise.getChannelData(0);
@@ -726,5 +732,31 @@ export class Sfx {
     src.connect(f).connect(g).connect(this.master!);
     src.start(t);
     src.stop(t + 2.3);
+  }
+
+  /** Звон в ушах после близкого взрыва: звук глохнет (ФНЧ на выходе) и тихо пищит высокий тон. strength 0..1. */
+  earRing(strength: number) {
+    const ctx = this.ensure();
+    if (!ctx || !this.earLp || strength < 0.05) return;
+    const t = ctx.currentTime;
+    const dur = 1 + strength; // 1–2 с
+    if (t + dur < this.earUntil) return; // уже звенит дольше
+    this.earUntil = t + dur;
+    const fq = this.earLp.frequency;
+    fq.cancelScheduledValues(t);
+    fq.setValueAtTime(Math.max(400, 2200 * (1 - strength * 0.8)), t);
+    fq.setValueAtTime(Math.max(400, 2200 * (1 - strength * 0.8)), t + dur * 0.35);
+    fq.exponentialRampToValueAtTime(22000, t + dur);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = 5200;
+    const g = ctx.createGain();
+    const v = 0.035 * strength * this.volume;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(Math.max(0.0002, v), t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(ctx.destination); // мимо фильтра: тон слышен сквозь «глухоту»
+    o.start(t);
+    o.stop(t + dur + 0.05);
   }
 }

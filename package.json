@@ -22,7 +22,8 @@
     "test:party": "tsx tools/party.ts",
     "test:lobby": "tsx tools/lobbye2e.ts",
     "test:assist": "tsx tools/assist.ts",
-    "test:sides": "tsx tools/sides.ts"
+    "test:sides": "tsx tools/sides.ts",
+    "test:spray": "tsx tools/spray.ts"
   },
   "engines": {
     "node": ">=22"

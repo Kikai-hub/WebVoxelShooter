@@ -1,6 +1,7 @@
 // Оружие: характеристики общие для сервера, клиента и меню снаряжения.
 
 import { rand01 } from './rng';
+import { BTN_SCOPE } from './constants';
 
 export const SLOT_PRIMARY = 0;
 export const SLOT_PISTOL = 1;
@@ -52,10 +53,16 @@ export interface WeaponDef {
   falloff: number;
   /** продаётся только этой стороне (0 — атака, 1 — защита) */
   team?: 0 | 1;
+  /**
+   * Паттерн очереди: смещение [вправо, вверх] в радианах для N-го выстрела серии
+   * (0 — первый выстрел, всегда [0, 0]). Пустой — старая модель: только растущий круг разброса.
+   * Строится генератором `makePattern` по `SPRAY` ниже.
+   */
+  pattern: [number, number][];
 }
 
 // Ключи (osa, vikhr…) — внутренние и хранятся в снаряжении игроков: не менять. Названия — реальные.
-export const WEAPONS: WeaponDef[] = [
+const RAW_WEAPONS: Omit<WeaponDef, 'pattern'>[] = [
   { id: 0, key: 'knife', name: 'Нож', kind: 'knife', slot: SLOT_KNIFE, price: 0, damage: 45, interval: 0.55, mag: 0, reserve: 0, reload: 0, spread: 0, moveSpread: 0, recoil: 0, recoilMax: 0, range: 1.9, armorPen: 0.85, auto: true, pellets: 1, killReward: 1500, speed: 1.05, falloff: 1 },
   { id: 1, key: 'osa', name: 'Glock-17', kind: 'pistol', slot: SLOT_PISTOL, price: 0, damage: 28, interval: 0.15, mag: 20, reserve: 100, reload: 2.2, spread: 0.006, moveSpread: 0.03, recoil: 0.012, recoilMax: 0.05, range: 200, armorPen: 0.5, auto: false, pellets: 1, killReward: 300, speed: 1.02, falloff: 0.8 },
   { id: 2, key: 'gyurza', name: 'Desert Eagle', kind: 'pistol', slot: SLOT_PISTOL, price: 700, damage: 55, interval: 0.26, mag: 7, reserve: 35, reload: 2.2, spread: 0.005, moveSpread: 0.05, recoil: 0.03, recoilMax: 0.08, range: 200, armorPen: 0.9, auto: false, pellets: 1, killReward: 300, speed: 1.0, falloff: 0.85 },
@@ -85,6 +92,56 @@ export const WEAPONS: WeaponDef[] = [
   { id: 21, key: 'awm', name: 'AWM', kind: 'sniper', slot: SLOT_PRIMARY, price: 5000, damage: 130, interval: 1.5, mag: 5, reserve: 30, reload: 3.7, spread: 0.0007, moveSpread: 0.16, recoil: 0.05, recoilMax: 0.05, range: 500, armorPen: 0.97, auto: false, pellets: 1, killReward: 100, speed: 0.78, falloff: 0.99 },
   { id: 6, key: 'sokol', name: 'Мосин-Наган', kind: 'sniper', slot: SLOT_PRIMARY, price: 4750, damage: 115, interval: 1.4, mag: 5, reserve: 30, reload: 3.6, spread: 0.0008, moveSpread: 0.15, recoil: 0.05, recoilMax: 0.05, range: 500, armorPen: 0.97, auto: false, pellets: 1, killReward: 100, speed: 0.8, falloff: 0.99 },
 ];
+
+/**
+ * Параметры паттерна очереди (генератор `makePattern`), радианы:
+ * - rise — на сколько поднимется прицел к концу подъёма; riseShots — за сколько выстрелов
+ *   он наберёт ~63% подъёма (экспонента: сначала резко вверх, потом полка);
+ * - amp — амплитуда «змейки» влево-вправо, period — её период в выстрелах,
+ *   start — с какого выстрела начинается змейка (до неё — почти чистый подъём),
+ *   side — в какую сторону первый уход (1 — вправо, -1 — влево);
+ * - lean — постоянный крен вбок на каждый выстрел подъёма (у каждого ствола свой характер).
+ * Мелкая детерминированная «дрожь» добавляется по id оружия, чтобы паттерны не были идеальными синусоидами.
+ * Автоматы и ПП — выраженный паттерн; пистолеты, дробовики и снайперки — без паттерна (старая модель).
+ */
+export interface SpraySpec {
+  rise: number;
+  riseShots: number;
+  amp: number;
+  period: number;
+  start: number;
+  side: 1 | -1;
+  lean: number;
+}
+
+const SPRAY: Record<string, SpraySpec> = {
+  // винтовки: сильный подъём, широкая медленная змейка
+  vikhr: { rise: 0.085, riseShots: 4.5, amp: 0.034, period: 13, start: 8, side: -1, lean: 0.0012 },
+  m4a1: { rise: 0.068, riseShots: 4.5, amp: 0.026, period: 12, start: 9, side: 1, lean: -0.0008 },
+  aug: { rise: 0.064, riseShots: 5, amp: 0.022, period: 14, start: 10, side: -1, lean: 0.001 },
+  // ПП: подъём меньше, змейка частая
+  shmel: { rise: 0.05, riseShots: 4, amp: 0.024, period: 9, start: 6, side: 1, lean: 0.0006 },
+  mac10: { rise: 0.058, riseShots: 3.5, amp: 0.034, period: 7, start: 5, side: -1, lean: -0.0012 },
+  ump: { rise: 0.056, riseShots: 4, amp: 0.028, period: 10, start: 6, side: 1, lean: 0.001 },
+  skorpion: { rise: 0.045, riseShots: 3, amp: 0.03, period: 6, start: 4, side: -1, lean: 0.0005 },
+};
+
+/** Сгенерировать паттерн на n выстрелов: [вправо, вверх] в радианах. */
+export function makePattern(spec: SpraySpec, n: number, salt: number): [number, number][] {
+  const out: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const up = spec.rise * (1 - Math.exp(-i / spec.riseShots));
+    // змейка включается плавно за 3 выстрела после start
+    const k = Math.max(0, Math.min(1, (i - spec.start + 3) / 3));
+    const ph = ((i - spec.start) / spec.period) * Math.PI * 2;
+    const jitter = i === 0 ? 0 : (rand01(salt * 7919 + i * 104729) * 2 - 1) * spec.amp * 0.12;
+    const right = spec.side * spec.amp * k * Math.sin(ph) + spec.lean * Math.min(i, spec.start) + jitter;
+    out.push([right, up]);
+  }
+  return out;
+}
+
+export const WEAPONS: WeaponDef[] = RAW_WEAPONS.map((w) => ({ ...w, pattern: SPRAY[w.key] ? makePattern(SPRAY[w.key], w.mag, w.id) : [] }));
 
 // индекс в массиве = id оружия (на это опираются клиент и протокол)
 WEAPONS.sort((a, b) => a.id - b.id);
@@ -135,7 +192,13 @@ export function shotDirection(
   seed: number,
   pellet: number,
   out: [number, number, number],
+  /** смещение паттерна очереди [вправо, вверх], рад */
+  kick?: readonly [number, number],
 ): [number, number, number] {
+  if (kick) {
+    yaw -= kick[0]; // yaw растёт влево
+    pitch = Math.max(-1.55, Math.min(1.55, pitch + kick[1]));
+  }
   const cp = Math.cos(pitch),
     sp = Math.sin(pitch);
   const cy = Math.cos(yaw),
@@ -169,4 +232,79 @@ export function shotDirection(
 export function viewDirection(yaw: number, pitch: number): [number, number, number] {
   const cp = Math.cos(pitch);
   return [-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp];
+}
+
+// ---------- Серия выстрелов (паттерн отдачи) ----------
+//
+// Состояние серии — два целых: номер следующего выстрела и сколько команд прошло с последнего.
+// Оно меняется только по командам ввода (по одной на тик 64 Гц), поэтому сервер и клиент,
+// прогнав одни и те же команды, получают один и тот же номер выстрела, при любой задержке.
+// Если они всё же разошлись (сервер выбросил команды из переполненной очереди, клиент
+// ошибся в предсказании — например, магазин уже пуст), сервер присылает своё состояние
+// в снапшоте вместе с номером последней применённой команды, а клиент переигрывает
+// поверх него ещё не подтверждённые команды (как с движением).
+
+/** Сколько команд без выстрела серия держится (больше интервала любого автомата: 0.1 с = 6.4 тика). */
+export const SPRAY_HOLD = 8;
+/** После паузы номер выстрела уменьшается на 1 каждые столько команд (полный спад 30 выстрелов ≈ 1 с). */
+export const SPRAY_DECAY = 2;
+export const SPRAY_MAX = 64;
+/** Доля прежнего круга разброса от очереди, остающаяся у оружия с паттерном. */
+export const SPRAY_CONE = 0.6;
+
+export interface SprayState {
+  /** номер следующего выстрела серии (0 — первый) */
+  idx: number;
+  /** команд с последнего выстрела (до 255) */
+  idle: number;
+}
+
+export function newSpray(): SprayState {
+  return { idx: 0, idle: 255 };
+}
+
+/** Шаг серии на каждую команду — до проверки выстрела. Не зависит от оружия в руках. */
+export function sprayTick(s: SprayState) {
+  if (s.idle < 255) s.idle++;
+  if (s.idx > 0 && s.idle > SPRAY_HOLD && (s.idle - SPRAY_HOLD) % SPRAY_DECAY === 0) s.idx--;
+}
+
+/** Выстрел: возвращает номер этого выстрела в серии и продвигает серию. */
+export function sprayFire(s: SprayState): number {
+  const i = s.idx;
+  s.idx = Math.min(SPRAY_MAX, s.idx + 1);
+  s.idle = 0;
+  return i;
+}
+
+/**
+ * Сверка с сервером: состояние серии после подтверждённой команды (из снапшота) плюс
+ * переигранные поверх неё неподтверждённые команды; `fired` — где клиент предсказал выстрел.
+ */
+export function spraySync(s: SprayState, idx: number, idle: number, pendingSeqs: Iterable<number>, fired: Set<number>) {
+  s.idx = idx;
+  s.idle = idle;
+  for (const q of pendingSeqs) {
+    sprayTick(s);
+    if (fired.has(q)) sprayFire(s);
+  }
+}
+
+/** Смещение паттерна для выстрела с номером idx (за концом паттерна — последняя точка). */
+export function sprayKick(def: WeaponDef, idx: number): readonly [number, number] {
+  const p = def.pattern;
+  if (!p.length) return ZERO_KICK;
+  return p[Math.min(idx, p.length - 1)];
+}
+const ZERO_KICK: readonly [number, number] = [0, 0];
+
+/** Добавка к кругу разброса от очереди (прежняя модель recoil/recoilMax; у паттерна — ослабленная). */
+export function sprayCone(def: WeaponDef, idx: number): number {
+  const c = Math.min(def.recoil * idx, def.recoilMax);
+  return def.pattern.length ? c * SPRAY_CONE : c;
+}
+
+/** Множитель скорости бега: вес оружия, у снайперки в прицеле ещё ×0.6 (как в CS). */
+export function moveSpeedMul(def: WeaponDef, buttons: number): number {
+  return def.speed * (def.kind === 'sniper' && buttons & BTN_SCOPE ? 0.6 : 1);
 }

@@ -81,6 +81,7 @@ const scenarios: Scn[] = [
   { name: 'Поворот на месте', weapon: 'rifle', move: (t) => still({ yaw: YAW_CAM + Math.sin(t * 0.9) * 1.6 }) },
   { name: 'Меню: винтовка', weapon: 'rifle', move: () => still({ hold: 'low', yaw: YAW_CAM + 0.35, pitch: -0.1 }) },
   { name: 'Меню: пистолет', weapon: 'pistol', move: () => still({ hold: 'up', yaw: YAW_CAM + 0.35, pitch: -0.1 }) },
+  { name: 'Удары ножом', weapon: 'knife', move: (t) => still({ fire: t % 1.1 < 0.1, yaw: YAW_CAM - 0.9 }) },
   { name: 'Закладка бомбы', weapon: 'rifle', move: (t) => still({ using: t % 6 < 4 ? 'plant' : undefined, yaw: YAW_CAM - 1.1 }) },
   { name: 'Обезвреживание', weapon: 'pistol', move: (t) => still({ using: t % 8 < 6 ? 'defuse' : undefined, yaw: YAW_CAM - 1.1 }) },
 ];
@@ -148,6 +149,7 @@ const pauseBtn = btn('Пауза', () => {
   paused = !paused;
   pauseBtn.classList.toggle('on', paused);
 });
+btn('Оружие от 1-го лица →', () => (location.href = 'anim.html?vm=1'));
 // приблизить камеру к одному агенту
 let focus = Number(new URLSearchParams(location.search).get('focus') ?? -1);
 const focusBtns: HTMLButtonElement[] = [];
@@ -191,8 +193,11 @@ const v = new THREE.Vector3();
 function frame() {
   requestAnimationFrame(frame);
   const now = performance.now();
-  const dt = paused ? 0 : (Math.min(0.1, (now - last) / 1000) * speedMul);
+  step(paused ? 0 : Math.min(0.1, (now - last) / 1000) * speedMul);
   last = now;
+}
+/** Один кадр на dt секунд; из консоли — window.animStep(dt) (скрытая вкладка не получает requestAnimationFrame). */
+function step(dt: number) {
   t += dt;
   const fa = actors[focus];
   const target = fa ? new THREE.Vector3(fa.x0, 0.9, fa.z0) : new THREE.Vector3(0, 0.9, -CELL_Z);
@@ -223,3 +228,4 @@ function frame() {
 }
 setFocus(focus);
 requestAnimationFrame(frame);
+(window as unknown as { animStep: (dt: number) => void }).animStep = step;

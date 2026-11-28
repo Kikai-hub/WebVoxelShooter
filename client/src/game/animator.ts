@@ -5,6 +5,8 @@
 import { BODY_LEG_H, CROUCH_SPEED, newPoseAnim, RUN_SPEED, type PoseAnim } from '../../../shared/src/index';
 
 const TAU = Math.PI * 2;
+/** длительность взмаха ножом, с */
+const SWING_TIME = 0.45;
 /** длина полного цикла шага (два шага), м */
 const STRIDE_RUN = 2.6;
 const STRIDE_CROUCH = 1.3;
@@ -58,9 +60,17 @@ export class AgentAnimator {
   private use = 0;
   private useT = 0;
   private t = Math.random() * 10;
+  /** взмах ножом: время с начала (−1 — нет) и направление */
+  private swingT = -1;
+  private swingDir = 1;
 
   /** Выстрел этого игрока: руки и плечи подбрасывает отдачей. */
   fire(kind: string) {
+    if (kind === 'knife') {
+      // удары ножом чередуются: справа налево и слева направо
+      this.swingT = 0;
+      this.swingDir = -this.swingDir;
+    }
     this.kick = kind === 'sniper' || kind === 'shotgun' ? 1.4 : kind === 'knife' ? 0.8 : kind === 'grenade' ? 1 : 0.7;
   }
 
@@ -186,6 +196,19 @@ export class AgentAnimator {
     a.reload = this.reload * (0.85 + 0.15 * Math.sin(this.reloadT * 9));
     a.armPitch -= 0.3 * this.reload;
     a.weapon = s.weaponKind;
+    // взмах ножом: замах в сторону, рез поперёк до другой стороны, возврат
+    if (this.swingT >= 0 && s.weaponKind === 'knife') {
+      this.swingT += dt;
+      const k = this.swingT / SWING_TIME;
+      if (k >= 1) this.swingT = -1;
+      else {
+        const cut = Math.min(1, Math.max(0, (k - 0.2) / 0.4));
+        const ease = cut * cut * (3 - 2 * cut);
+        a.swing = this.swingDir * (1 - 2 * ease);
+        a.swingE = Math.sin(Math.min(1, k / 0.85) * Math.PI);
+      }
+    } else this.swingT = -1;
+    if (this.swingT < 0) a.swingE = 0;
     a.headYaw = 0;
     // наклон к бомбе
     a.use = u;

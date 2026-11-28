@@ -84,6 +84,9 @@ export interface OwnState {
   mag: number;
   reserve: number;
   canMove: boolean;
+  /** серия выстрелов после команды ackSeq: номер следующего выстрела и команд с последнего */
+  sprayIdx: number;
+  sprayIdle: number;
 }
 
 export interface EntState {
@@ -105,7 +108,7 @@ export interface Snapshot {
 }
 
 export function newOwnState(): OwnState {
-  return { present: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, flags: 0, hp: 0, armor: 0, weapon: 0, mag: 0, reserve: 0, canMove: false };
+  return { present: false, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, flags: 0, hp: 0, armor: 0, weapon: 0, mag: 0, reserve: 0, canMove: false, sprayIdx: 0, sprayIdle: 255 };
 }
 
 // Квантование: x,z в [0, 64) м, y в [-4, 28) м — 16 бит (~1 мм)
@@ -137,7 +140,9 @@ export function encodeSnapshot(s: Snapshot, buf: ArrayBuffer): number {
   v.setUint8(o + 27, own.weapon);
   v.setUint8(o + 28, own.mag);
   v.setUint16(o + 29, own.reserve, true);
-  // 6 байт резерва под будущее (гранаты и т.п.)
+  v.setUint8(o + 31, own.sprayIdx);
+  v.setUint8(o + 32, own.sprayIdle);
+  // 4 байта резерва под будущее
   o += 37;
   v.setUint8(o, s.ents.length);
   o += 1;
@@ -177,6 +182,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
   own.weapon = v.getUint8(o + 27);
   own.mag = v.getUint8(o + 28);
   own.reserve = v.getUint16(o + 29, true);
+  own.sprayIdx = v.getUint8(o + 31);
+  own.sprayIdle = v.getUint8(o + 32);
   o += 37;
   const n = v.getUint8(o);
   o += 1;
@@ -284,7 +291,9 @@ export type GameEvent =
   | { e: 'chat'; n: string; t: number; text: string; dead: boolean; tm: boolean }
   | { e: 'info'; text: string }
   | { e: 'step'; s: number }
-  | { e: 'reload'; s: number };
+  | { e: 'reload'; s: number }
+  /** взмах ножом (s — кто): звук и анимация у остальных */
+  | { e: 'swing'; s: number };
 
 export interface FullState {
   t: 'full';

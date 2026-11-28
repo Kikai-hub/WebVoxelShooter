@@ -30,3 +30,9 @@ export function reloadSteps(kind: string, key = ''): readonly ReloadStep[] {
   if (REVOLVER_KEYS.has(key)) return RELOAD_TIMINGS.revolver;
   return RELOAD_TIMINGS[kind] ?? RELOAD_TIMINGS.rifle;
 }
+
+/**
+ * Время доставания оружия, с: сервер не даёт стрелять столько после смены слота,
+ * клиент столько же показывает анимацию доставания.
+ */
+export const DRAW_TIME = 0.35;

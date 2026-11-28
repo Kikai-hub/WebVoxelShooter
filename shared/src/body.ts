@@ -98,6 +98,9 @@ export interface PoseAnim {
   /** цевьё конкретной модели относительно рукояти: вперёд вдоль ствола и вверх, м (0 — по виду оружия) */
   foreD: number;
   foreUp: number;
+  /** взмах ножом: swing — куда идёт клинок (−1 слева … +1 справа), swingE — вынос руки 0..1 */
+  swing?: number;
+  swingE?: number;
   // ---- выход computePose (заполняется им) ----
   /** сгиб локтей; применяет VoxelBody */
   elbowL: number;
@@ -236,7 +239,15 @@ function computeAnimatedPose(x: number, y: number, z: number, yaw: number, pitch
     return [p[0], shY + p[1] * c - p[2] * s, topZ + p[1] * s + p[2] * c];
   };
   const grip = rot(g.grip);
-  writePart(an.gun, 0, lx(grip[0], grip[2]), grip[1], lz(grip[0], grip[2]), yaw, gp, 1);
+  // взмах ножом: кисть выносится вперёд-вверх и проходит поперёк, клинок разворачивается по ходу удара
+  const se = an.swingE ?? 0;
+  const sw = an.swing ?? 0;
+  if (se > 0) {
+    grip[0] += (sw * 0.28 - 0.08) * se;
+    grip[1] += 0.12 * se;
+    grip[2] -= 0.22 * se;
+  }
+  writePart(an.gun, 0, lx(grip[0], grip[2]), grip[1], lz(grip[0], grip[2]), yaw - sw * 0.9 * se, gp - 0.5 * se, 1);
   // левая кисть: на цевье / рукояти, при перезарядке — к магазину
   // у длинного оружия левая кисть — на цевье конкретной модели, если оно известно
   const left0: readonly [number, number, number] = an.foreD > 0 && !g.leftFree && g.follow > 0.8 && an.weapon !== 'pistol' ? [g.grip[0] - 0.01, g.grip[1] + an.foreUp - 0.02, g.grip[2] - an.foreD] : g.left;

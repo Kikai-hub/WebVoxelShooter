@@ -4,6 +4,7 @@
 import {
   ARMOR_PRICE,
   BOMB_TIMER,
+  DRAW_TIME,
   BTN_FIRE,
   BTN_ALT_FIRE,
   BTN_DROP,
@@ -115,6 +116,13 @@ import {
   raycastBody,
   raycastMap,
   shotDirection,
+  type SprayState,
+  newSpray,
+  sprayTick,
+  sprayFire,
+  sprayKick,
+  sprayCone,
+  moveSpeedMul,
   damageAt,
   snapshotSize,
   stepPlayer,
@@ -224,7 +232,8 @@ export class Player {
   simTime = 0;
   nextFire = 0;
   reloadEnd = 0;
-  recoil = 0;
+  /** серия выстрелов (паттерн отдачи); меняется только командами — как у клиента */
+  spray: SprayState = newSpray();
   lastButtons = 0;
   /** кнопки броска, зажатые с момента выдернутой чеки (0 — граната не наготове) */
   nadeHold = 0;
@@ -971,7 +980,7 @@ export class Room {
       p.hasBomb = false;
       p.useProgress = 0;
       p.reloadEnd = 0;
-      p.recoil = 0;
+      p.spray = newSpray();
       p.nextFire = p.simTime;
       p.slot = p.primary ? SLOT_PRIMARY : SLOT_PISTOL;
       if (p.primary) {
@@ -1294,8 +1303,8 @@ export class Room {
     // закладывает или обезвреживает бомбу: ничего другого делать нельзя
     // (движение и прыжок останавливает сама физика при зажатой E, здесь — оружие)
     const busy = p.useProgress > 0 && (cmd.buttons & BTN_USE) !== 0;
-    stepPlayer(p.st, cmd.buttons, p.yaw, this.info.map, canMove, p.weapon.speed);
-    p.recoil *= Math.exp(-DT * 6);
+    stepPlayer(p.st, cmd.buttons, p.yaw, this.info.map, canMove, moveSpeedMul(p.weapon, cmd.buttons));
+    sprayTick(p.spray);
 
     // Смена оружия (гранаты — только если они есть)
     if (p.slot >= SLOT_HE && p.nades[p.slot - SLOT_HE] <= 0) p.slot = p.gunSlot;
@@ -1304,7 +1313,7 @@ export class Room {
       if (ok) {
         p.slot = cmd.slot;
         p.reloadEnd = 0;
-        p.nextFire = Math.max(p.nextFire, p.simTime + 0.35);
+        p.nextFire = Math.max(p.nextFire, p.simTime + DRAW_TIME);
       }
     }
     const wi = p.weaponInst;
@@ -1348,6 +1357,8 @@ export class Room {
             this.events.push({ e: 'reload', s: p.id });
           }
         } else {
+          // взмах ножом слышат и видят остальные (выстрела у ножа нет)
+          if (def.kind === 'knife') this.events.push({ e: 'swing', s: p.id });
           this.fire(p, cmd, def, wi);
         }
       }
@@ -1359,14 +1370,15 @@ export class Room {
     if (wi) wi.mag--;
     p.nextFire = p.simTime + def.interval;
     const speed = Math.hypot(p.st.vx, p.st.vz);
-    const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (p.st.onGround ? 0 : 0.08) + p.recoil * (p.st.crouch ? 0.7 : 1);
-    p.recoil = Math.min(p.recoil + def.recoil, def.recoilMax);
+    const si = sprayFire(p.spray);
+    const spread = def.spread + (speed / RUN_SPEED) * def.moveSpread + (p.st.onGround ? 0 : 0.08) + sprayCone(def, si) * (p.st.crouch ? 0.7 : 1);
+    const kick = sprayKick(def, si);
     const [ex, ey, ez] = p.eye();
     const vt = Math.max(this.tick - MAX_LAG_COMP_TICKS, Math.min(this.tick, cmd.viewTick));
     const seed = p.id * 1000003 + cmd.seq;
     const hitsBy = new Map<number, number>();
     for (let k = 0; k < def.pellets; k++) {
-      const d = shotDirection(p.yaw, p.pitch, spread, seed, k, this.dir);
+      const d = shotDirection(p.yaw, p.pitch, spread, seed, k, this.dir, kick);
       let maxT = def.range;
       let h: 0 | 1 | 2 = 0;
       if (raycastMap(this.info.map, ex, ey, ez, d[0], d[1], d[2], maxT, this.mapHit)) {
@@ -1908,6 +1920,8 @@ export class Room {
         const wi = viewer.weaponInst;
         own.mag = wi ? wi.mag : 0;
         own.reserve = wi ? wi.reserve : 0;
+        own.sprayIdx = viewer.spray.idx;
+        own.sprayIdle = viewer.spray.idle;
         own.canMove = this.phase !== 'freeze' && this.phase !== 'vote';
       }
       const buf = new ArrayBuffer(snapshotSize(ents.length));

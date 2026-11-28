@@ -16,6 +16,12 @@
   <body>
     <div id="ui"></div>
     <div id="hint">Стенд анимаций агентов (только для разработки). Мышь — вращать камеру, колесо — приблизить.</div>
-    <script type="module" src="/src/animLab.ts"></script>
+    <!-- ?vm=1 — оружие от первого лица (перезарядка, доставание, нож), иначе — агенты от третьего лица -->
+    <script type="module">
+      if (new URLSearchParams(location.search).has('vm')) {
+        document.getElementById('hint').textContent = 'Оружие от первого лица. R — перезарядка, F — осмотр, клик/пробел — выстрел или удар. Ползунок — замороженный кадр.';
+        import('/src/vmLab.ts');
+      } else import('/src/animLab.ts');
+    </script>
   </body>
 </html>

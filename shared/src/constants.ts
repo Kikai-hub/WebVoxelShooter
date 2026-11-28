@@ -111,6 +111,8 @@ export const BTN_DROP = 512;
 export const BTN_WALK = 1024;
 /** Правая кнопка мыши с гранатой в руках: бросок послабее (как в CS). */
 export const BTN_ALT_FIRE = 2048;
+/** снайперка в прицеле (ПКМ): бег ×0.6 */
+export const BTN_SCOPE = 4096;
 
 // Гранаты
 export const NADE_GRAVITY = 18;
